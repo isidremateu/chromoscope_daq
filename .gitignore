@@ -1,0 +1,12 @@
+# OpenCode config
+opencode.json
+
+# Python virtual environment
+.venv/
+
+# Vendored Thorlabs SDK (excluded for now)
+Scientific Camera Interfaces/
+
+# Python bytecode
+__pycache__/
+*.pyc
