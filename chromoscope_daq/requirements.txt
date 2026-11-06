@@ -1,0 +1,11 @@
+# Thorlabs TSI Scientific Camera SDK — NOT on PyPI.
+# Install it from the bundled zip (from the repository root):
+#   python -m pip install "Scientific Camera Interfaces/SDK/Python Toolkit/thorlabs_tsi_camera_python_sdk_package.zip"
+# (A PEP 508 direct reference like `name @ file://...` cannot be used here
+#  because the path contains spaces.)
+
+numpy
+pillow >= 5.4.1
+tifffile >= 2019.3.8
+opencv-python
+matplotlib
