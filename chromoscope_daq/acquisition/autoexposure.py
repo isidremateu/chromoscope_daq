@@ -32,7 +32,7 @@ class AutoExposureController:
                  every_n_frames: int = 2,
                  tolerance: float = 0.05,
                  min_write_interval_s: float = _MIN_WRITE_INTERVAL_S,
-                 max_step_factor: float = 8.0) -> None:
+                 max_step_factor: float = 16.0) -> None:
         if every_n_frames < 1:
             raise ValueError("every_n_frames must be >= 1")
         if max_step_factor <= 1.0:
@@ -47,6 +47,8 @@ class AutoExposureController:
         # near-black frame (ratio ~500x) would jump the exposure to the
         # range maximum in one step and starve the camera for tens of
         # seconds; capping converges over a few gated frames instead.
+        # Capping never overshoots (ratios below the cap are applied
+        # exactly), so a larger cap only shortens convergence.
         self._max_step = float(max_step_factor)
         # Current commanded settings.
         self.exposure_us = float(exposure_time_range_us[0])
