@@ -136,7 +136,7 @@ def _run_snapshot(camera) -> None:
     ext = "jpg" if fmt.startswith("jpg") else "tif"
     path = os.path.join(save_dir, build_filename(ts, identifier, ext))
     print(f"[ok] saved {path} "
-          f"(mean luminance {bundle.mean_luminance:.1f})")
+          f"(mean luminance {bundle.mean_luminance:.1f} / 1023)")
 
 
 def _run_streaming(camera) -> None:
@@ -153,11 +153,14 @@ def _run_streaming(camera) -> None:
     auto = AutoExposureController(camera.exposure_time_range_us,
                                   _gain_range_db(camera))
     ts = acquisition_timestamp()
+    last = {}
     session = StreamingSession(camera, fps=fps, timestamp=ts,
                                identifier=identifier, save_dir=save_dir,
                                save_enabled=True,
                                duration_s=duration or None,
-                               auto_exposure=auto)
+                               auto_exposure=auto,
+                               on_frame=lambda b, i: last.update(
+                                   lum=b.mean_luminance))
 
     def target():
         return session.run(threading.Event())
@@ -172,14 +175,19 @@ def _run_streaming(camera) -> None:
     print(f"[ok] frames {stats.frames}, dropped {stats.dropped_mp4}, "
           f"exposure {stats.exposure_us:.1f} us, "
           f"gain {stats.gain_db:.1f} dB")
+    if "lum" in last:
+        print(f"     last frame mean luminance: "
+              f"{last['lum']:.1f} / 1023")
     print(f"[ok] saved {path}")
 
 
 def _run_time_series(camera) -> None:
-    print(f"Current exposure {camera.exposure_time_us} us, gain "
+    print(f"Current exposure {camera.exposure_time_us} us "
+          f"(= {camera.exposure_time_us / 1e6:.3g} s), gain "
           f"{camera.convert_gain_to_decibels(camera.gain):.1f} dB "
           "(Time Series uses manual exposure).")
-    exposure_raw = input("Exposure us [keep current]: ").strip()
+    exposure_raw = input(
+        "Exposure us (1000000 = 1 s) [keep current]: ").strip()
     if exposure_raw:
         try:
             camera.exposure_time_us = int(round(float(exposure_raw)))
@@ -198,10 +206,13 @@ def _run_time_series(camera) -> None:
     save_dir = _ask_dir()
 
     ts = acquisition_timestamp()
+    last = {}
     session = TimeSeriesSession(camera, interval_s=interval, timestamp=ts,
                                 identifier=identifier, save_dir=save_dir,
                                 save_enabled=True,
-                                max_frames=max_frames or None)
+                                max_frames=max_frames or None,
+                                on_frame=lambda b, i: last.update(
+                                    lum=b.mean_luminance))
 
     def target():
         return session.run(threading.Event())
@@ -216,6 +227,8 @@ def _run_time_series(camera) -> None:
     ome = os.path.join(save_dir, build_filename(ts, identifier + "_OME",
                                                 "tif"))
     print(f"[ok] frames {stats.frames}")
+    if "lum" in last:
+        print(f"     last frame mean luminance: {last['lum']:.1f} / 1023")
     print(f"[ok] saved {classic}")
     print(f"[ok] saved {ome}")
 
