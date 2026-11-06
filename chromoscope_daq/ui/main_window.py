@@ -71,6 +71,7 @@ class MainWindow:
         # Auto-exposure values frozen from the last Streaming run (README:
         # switching Streaming -> Time Series freezes them as manual).
         self._last_auto: Optional[tuple] = None
+        self._live_ae: Optional[tuple] = None
         self._build_ui()
         self._poll_events()
 
@@ -310,6 +311,7 @@ class MainWindow:
                       .replace("/", "_").replace("\\", "_")) or "run"
         os.makedirs(save_dir, exist_ok=True)
         ts = acquisition_timestamp()
+        self._live_ae = None
 
         try:
             target = self._build_target(mode, config, ts, identifier,
@@ -355,7 +357,7 @@ class MainWindow:
                 camera, fps=fps, timestamp=ts, identifier=identifier,
                 save_dir=save_dir, save_enabled=save_enabled,
                 duration_s=duration or None, auto_exposure=auto,
-                processor=self._processor, on_frame=on_frame)
+                processor=self._processor, on_frame=self._make_on_frame(auto))
             return lambda: session.run(self._stop_event)
         # Time Series: manual exposure (README), frozen from the last
         # streaming auto-exposure run when available.
@@ -392,6 +394,16 @@ class MainWindow:
             self._latest_bundle = bundle
         self._frame_counter = index
 
+    def _make_on_frame(self, auto: Optional[AutoExposureController]
+                       ) -> Callable[[FrameBundle, int], None]:
+        """on_frame that also captures live auto-exposure state."""
+        def on_frame(bundle: FrameBundle, index: int) -> None:
+            self._on_frame(bundle, index)
+            if auto is not None:
+                self._live_ae = (auto.exposure_us, auto.gain_db,
+                                 bundle.mean_luminance)
+        return on_frame
+
     # ------------------------------------------------------------------
     # Event loop
     # ------------------------------------------------------------------
@@ -410,7 +422,20 @@ class MainWindow:
                 self._report_done(payload)
                 self._finish_run()
         self._draw_latest()
+        self._update_live_status()
         self._root.after(_POLL_MS, self._poll_events)
+
+    def _update_live_status(self) -> None:
+        """While running, show live progress (frames, auto-exposure state)."""
+        if self._worker is None:
+            return
+        parts = [f"{self._mode_var.get()}: {self._frame_counter} frames"]
+        if self._live_ae is not None:
+            exposure_us, gain_db, luminance = self._live_ae
+            parts.append(f"exposure {exposure_us:.1f} us, "
+                         f"gain {gain_db:.1f} dB, "
+                         f"luminance {luminance:.1f} / 1023")
+        self._status_var.set("  |  ".join(parts) + " ...")
 
     def _finish_run(self) -> None:
         self._worker = None

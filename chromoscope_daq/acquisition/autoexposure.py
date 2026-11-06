@@ -29,7 +29,7 @@ class AutoExposureController:
     def __init__(self, exposure_time_range_us: Tuple[float, float],
                  gain_range: Tuple[float, float],
                  target_luminance: float = TARGET_FRACTION * FULL_SCALE,
-                 every_n_frames: int = 10,
+                 every_n_frames: int = 2,
                  tolerance: float = 0.05,
                  min_write_interval_s: float = _MIN_WRITE_INTERVAL_S,
                  max_step_factor: float = 8.0) -> None:
@@ -86,11 +86,15 @@ class AutoExposureController:
         them to the camera, respecting the 300 ms throttle).
         """
         if mean_luminance <= 0.0:
-            return False
-        ratio = self._target / mean_luminance
-        lo = self._tolerance
-        if 1.0 - lo <= ratio <= 1.0 + lo:
-            return False
+            # Fully black frame: no usable ratio. Step the exposure up by
+            # the cap anyway so a very dark scene converges instead of
+            # stalling forever (exposure at maximum -> gain fallback).
+            ratio = self._max_step
+        else:
+            ratio = self._target / mean_luminance
+            lo = self._tolerance
+            if 1.0 - lo <= ratio <= 1.0 + lo:
+                return False
         # Cap the per-update change factor.
         effective = min(max(ratio, 1.0 / self._max_step), self._max_step)
 
