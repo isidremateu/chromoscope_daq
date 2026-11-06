@@ -10,3 +10,6 @@ Scientific Camera Interfaces/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Smoke test output data
+smoke_out_*/
