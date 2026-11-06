@@ -99,6 +99,14 @@ class StreamingSession:
         stats = StreamingStats()
         writer: Optional[Mp4Writer] = None
         self._arm_continuous()
+        if self._auto is None:
+            # Manual mode: the camera's exposure/gain are fixed during the
+            # run — report them so the UI shows the actual values.
+            stats.exposure_us = float(self._camera.exposure_time_us)
+            convert = getattr(self._camera, "convert_gain_to_decibels", None)
+            stats.gain_db = (convert(self._camera.gain)
+                             if convert is not None
+                             else float(self._camera.gain))
         try:
             if self._save_enabled:
                 path = self._mp4_path()

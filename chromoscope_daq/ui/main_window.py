@@ -96,6 +96,7 @@ class MainWindow:
         self._build_settings_frame(left)
         self._build_acquisition_frame(left)
         self._build_canvas(right)
+        self._on_mode_change()  # initial state: Streaming selected
 
     def _build_mode_frame(self, parent) -> None:
         box = ttk.LabelFrame(parent, text="Acquisition mode", padding=6)
@@ -103,7 +104,8 @@ class MainWindow:
         self._mode_var = tk.StringVar(value=MODE_STREAMING)
         for mode in MODES:
             ttk.Radiobutton(box, text=mode, value=mode,
-                            variable=self._mode_var).pack(anchor="w")
+                            variable=self._mode_var,
+                            command=self._on_mode_change).pack(anchor="w")
 
     def _build_settings_frame(self, parent) -> None:
         box = ttk.LabelFrame(parent, text="Settings", padding=6)
@@ -188,9 +190,11 @@ class MainWindow:
                   width=18).pack(side="left", padx=4)
         ttk.Label(id_frame, text="Format:").pack(side="left")
         self._format_var = tk.StringVar(value="tif")
-        ttk.Combobox(id_frame, textvariable=self._format_var, width=4,
-                     values=("tif", "jpg"), state="readonly").pack(
-            side="left")
+        self._format_combo = ttk.Combobox(
+            id_frame, textvariable=self._format_var, width=8,
+            values=("tif", "jpg"), state="readonly")
+        self._format_combo.pack(side="left")
+        self._last_fmt = "tif"
 
         ttk.Label(box, text="Streaming duration [s] "
                             "(0 = until Stop):").pack(anchor="w",
@@ -213,6 +217,19 @@ class MainWindow:
         self._status_var = tk.StringVar(value="Ready.")
         ttk.Label(box, textvariable=self._status_var).pack(
             anchor="w", pady=(6, 0))
+
+    def _on_mode_change(self) -> None:
+        """Make the format selector reflect what the mode actually saves."""
+        mode = self._mode_var.get()
+        if mode == MODE_SNAPSHOT:
+            self._format_combo.config(state="readonly")
+            self._format_var.set(self._last_fmt)
+        else:
+            if self._format_combo.cget("state") == "readonly":
+                self._last_fmt = self._format_var.get()
+            self._format_combo.config(state="disabled")
+            self._format_var.set("mp4" if mode == MODE_STREAMING
+                                 else "tif + OME")
 
     def _build_canvas(self, parent) -> None:
         self._canvas = tk.Canvas(parent, width=CANVAS_SIZE[0],
@@ -444,6 +461,7 @@ class MainWindow:
         self._render(bundle)
 
     def _render(self, bundle: FrameBundle) -> None:
+        self._last_bundle = bundle  # kept for re-renders on ROI changes
         rgb8 = display.bundle_to_rgb8(bundle)
         canvas_size = (max(self._canvas.winfo_width(), 1),
                        max(self._canvas.winfo_height(), 1))
@@ -463,6 +481,8 @@ class MainWindow:
 
     def _reset_view(self) -> None:
         self._roi = None
+        if getattr(self, "_last_bundle", None) is not None:
+            self._render(self._last_bundle)
 
     # -- ROI selection (full view only) ---------------------------------
 
@@ -495,6 +515,9 @@ class MainWindow:
         image_size = (self._camera.image_width_pixels,
                       self._camera.image_height_pixels)
         self._roi = display.normalize_roi((x0, y0, x1, y1), image_size)
+        if self._roi is not None and \
+                getattr(self, "_last_bundle", None) is not None:
+            self._render(self._last_bundle)  # zoom the on-screen frame now
 
     # ------------------------------------------------------------------
     # Shutdown
