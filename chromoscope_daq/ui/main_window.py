@@ -1,0 +1,538 @@
+"""Tkinter main window: live view, acquisition modes, settings, saving.
+
+Implements the README requirements that concern the acquisition UI:
+mode switching, save controls (folder/identifier/format), camera
+settings (auto/manual exposure, fps, gain, black level, color space,
+white balance), live display with ROI zoom, and the Streaming drop
+counter. Perspective correction and intensity calibration hooks into
+the display and variant saving are layered on in later steps.
+
+Acquisition runs on a worker thread; frames are handed over via the
+``on_frame`` callbacks (latest-wins) and completion/errors via a queue
+drained by the Tk event loop.
+"""
+
+from __future__ import annotations
+
+import os
+import queue
+import threading
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+from typing import Callable, Optional
+
+import numpy as np
+from PIL import Image, ImageTk
+
+from ..acquisition import (AcquisitionError, AutoExposureController,
+                           FrameBundle, SnapshotSession, StreamingSession,
+                           StreamingStats, TimeSeriesSession, TimeSeriesStats,
+                           acquisition_timestamp, camera_fps_max,
+                           make_processor, minimum_interval_s)
+from ..acquisition.processing import COLOR_SPACES
+from ..camera import CameraService
+from ..config import Configuration, ConfigurationError, max_fps
+from . import display
+
+#: Fixed display canvas size, in pixels.
+CANVAS_SIZE = (720, 540)
+#: UI refresh period for the event/queue poll, in ms.
+_POLL_MS = 33
+
+MODE_SNAPSHOT = "Snapshot"
+MODE_STREAMING = "Streaming"
+MODE_TIME_SERIES = "Time Series"
+MODES = (MODE_SNAPSHOT, MODE_STREAMING, MODE_TIME_SERIES)
+
+
+class MainWindow:
+    """Root application window for one connected camera."""
+
+    def __init__(self, root: tk.Tk, service: CameraService, camera) -> None:
+        self._root = root
+        self._service = service
+        self._camera = camera
+        self._config = Configuration()
+        self._processor = make_processor(self._config.color_space,
+                                         self._config.wb_gains)
+        self._worker: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._events: "queue.Queue[tuple]" = queue.Queue()
+        self._latest_bundle: Optional[FrameBundle] = None
+        self._latest_lock = threading.Lock()
+        self._roi = None                # (x0, y0, x1, y1) in image pixels
+        self._geom: Optional[display.ViewGeometry] = None
+        self._drawing = False
+        self._draw_start = (0, 0)
+        self._draw_rect = None
+        self._live_rect = (0, 0, 0, 0)
+        self._frame_counter = 0
+        self._photo: Optional[ImageTk.PhotoImage] = None
+        # Auto-exposure values frozen from the last Streaming run (README:
+        # switching Streaming -> Time Series freezes them as manual).
+        self._last_auto: Optional[tuple] = None
+        self._build_ui()
+        self._poll_events()
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
+
+    def _build_ui(self) -> None:
+        self._root.title("Chromoscope DAQ")
+        main = ttk.Frame(self._root, padding=8)
+        main.grid(row=0, column=0, sticky="nsew")
+        self._root.columnconfigure(0, weight=1)
+        self._root.rowconfigure(0, weight=1)
+
+        left = ttk.Frame(main)
+        left.grid(row=0, column=0, sticky="ns", padx=(0, 8))
+        right = ttk.Frame(main)
+        right.grid(row=0, column=1, sticky="nsew")
+        main.rowconfigure(0, weight=1)
+        main.columnconfigure(1, weight=1)
+
+        self._build_mode_frame(left)
+        self._build_settings_frame(left)
+        self._build_acquisition_frame(left)
+        self._build_canvas(right)
+
+    def _build_mode_frame(self, parent) -> None:
+        box = ttk.LabelFrame(parent, text="Acquisition mode", padding=6)
+        box.pack(fill="x", pady=(0, 6))
+        self._mode_var = tk.StringVar(value=MODE_STREAMING)
+        for mode in MODES:
+            ttk.Radiobutton(box, text=mode, value=mode,
+                            variable=self._mode_var).pack(anchor="w")
+
+    def _build_settings_frame(self, parent) -> None:
+        box = ttk.LabelFrame(parent, text="Settings", padding=6)
+        box.pack(fill="x", pady=(0, 6))
+        row = 0
+
+        self._auto_exposure_var = tk.BooleanVar(
+            value=self._config.auto_exposure)
+        ttk.Checkbutton(box, text="Auto exposure (Streaming)",
+                        variable=self._auto_exposure_var).grid(
+            row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+
+        self._exposure_var = tk.StringVar(
+            value=str(int(self._config.exposure_us)))
+        self._fps_var = tk.StringVar(value=str(self._config.fps))
+        self._gain_var = tk.StringVar(value=str(self._config.gain_db))
+        self._black_var = tk.StringVar(value=str(self._config.black_level))
+        for label, var, note in (
+                ("Exposure [us]", self._exposure_var, ""),
+                ("Frame rate [fps]", self._fps_var, ""),
+                ("Gain [dB]", self._gain_var, ""),
+                ("Black level", self._black_var, "")):
+            ttk.Label(box, text=label).grid(row=row, column=0, sticky="w")
+            ttk.Entry(box, textvariable=var, width=12).grid(
+                row=row, column=1, sticky="w")
+            row += 1
+
+        ttk.Label(box, text="Color space").grid(row=row, column=0,
+                                                sticky="w")
+        self._color_var = tk.StringVar(value=self._config.color_space)
+        ttk.Combobox(box, textvariable=self._color_var, width=10,
+                     values=list(COLOR_SPACES),
+                     state="readonly").grid(row=row, column=1, sticky="w")
+        row += 1
+
+        ttk.Label(box, text="WB gains R/G/B").grid(row=row, column=0,
+                                                   sticky="w")
+        wb_frame = ttk.Frame(box)
+        wb_frame.grid(row=row, column=1, sticky="w")
+        self._wb_vars = tuple(tk.StringVar(value=str(g))
+                              for g in self._config.wb_gains)
+        for var in self._wb_vars:
+            ttk.Entry(wb_frame, textvariable=var, width=5).pack(
+                side="left", padx=2)
+        row += 1
+
+        ttk.Button(box, text="Apply settings", command=self._apply_settings
+                   ).grid(row=row, column=0, columnspan=2, sticky="we",
+                          pady=(4, 0))
+
+    def _build_acquisition_frame(self, parent) -> None:
+        box = ttk.LabelFrame(parent, text="Acquisition", padding=6)
+        box.pack(fill="x", pady=(0, 6))
+
+        buttons = ttk.Frame(box)
+        buttons.pack(fill="x")
+        self._start_button = ttk.Button(buttons, text="Start",
+                                        command=self._start)
+        self._start_button.pack(side="left")
+        self._stop_button = ttk.Button(buttons, text="Stop",
+                                       command=self._stop, state="disabled")
+        self._stop_button.pack(side="left", padx=4)
+
+        self._save_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(box, text="Save data", variable=self._save_var
+                        ).pack(anchor="w")
+
+        path_frame = ttk.Frame(box)
+        path_frame.pack(fill="x")
+        self._dir_var = tk.StringVar(value="data")
+        ttk.Entry(path_frame, textvariable=self._dir_var).pack(
+            side="left", fill="x", expand=True)
+        ttk.Button(path_frame, text="...", width=3,
+                   command=self._browse).pack(side="left")
+
+        id_frame = ttk.Frame(box)
+        id_frame.pack(fill="x")
+        ttk.Label(id_frame, text="Identifier:").pack(side="left")
+        self._identifier_var = tk.StringVar(value="run")
+        ttk.Entry(id_frame, textvariable=self._identifier_var,
+                  width=18).pack(side="left", padx=4)
+        ttk.Label(id_frame, text="Format:").pack(side="left")
+        self._format_var = tk.StringVar(value="tif")
+        ttk.Combobox(id_frame, textvariable=self._format_var, width=4,
+                     values=("tif", "jpg"), state="readonly").pack(
+            side="left")
+
+        ttk.Label(box, text="Streaming duration [s] "
+                            "(0 = until Stop):").pack(anchor="w",
+                                                      pady=(4, 0))
+        self._duration_var = tk.StringVar(value="0")
+        ttk.Entry(box, textvariable=self._duration_var, width=10).pack(
+            anchor="w")
+
+        ttk.Label(box, text="Time Series dt [s] / images "
+                            "(0 images = until Stop):").pack(anchor="w")
+        ts_frame = ttk.Frame(box)
+        ts_frame.pack(anchor="w")
+        self._dt_var = tk.StringVar(value="1.0")
+        self._max_frames_var = tk.StringVar(value="10")
+        ttk.Entry(ts_frame, textvariable=self._dt_var, width=10).pack(
+            side="left", padx=(0, 4))
+        ttk.Entry(ts_frame, textvariable=self._max_frames_var, width=6).pack(
+            side="left")
+
+        self._status_var = tk.StringVar(value="Ready.")
+        ttk.Label(box, textvariable=self._status_var).pack(
+            anchor="w", pady=(6, 0))
+
+    def _build_canvas(self, parent) -> None:
+        self._canvas = tk.Canvas(parent, width=CANVAS_SIZE[0],
+                                 height=CANVAS_SIZE[1], bg="black")
+        self._canvas.grid(row=0, column=0, sticky="nsew")
+        parent.rowconfigure(0, weight=1)
+        parent.columnconfigure(0, weight=1)
+        reset = ttk.Button(parent, text="Reset view",
+                           command=self._reset_view)
+        reset.grid(row=1, column=0, pady=4)
+        self._canvas.bind("<Button-1>", self._on_press)
+        self._canvas.bind("<B1-Motion>", self._on_drag)
+        self._canvas.bind("<ButtonRelease-1>", self._on_release)
+
+    # ------------------------------------------------------------------
+    # Settings
+    # ------------------------------------------------------------------
+
+    def _apply_settings(self) -> None:
+        if self._worker is not None:
+            messagebox.showinfo("Busy", "Stop the acquisition before "
+                                        "changing settings.")
+            return
+        try:
+            config = self._read_config()
+        except ConfigurationError as error:
+            messagebox.showerror("Invalid settings", str(error))
+            return
+        try:
+            config.apply_to_camera(self._camera)
+        except Exception as error:  # noqa: BLE001 - SDK errors
+            messagebox.showerror("Camera error", str(error))
+            return
+        self._config = config
+        self._processor = make_processor(config.color_space,
+                                         config.wb_gains)
+        self._status_var.set("Settings applied.")
+
+    def _read_config(self) -> Configuration:
+        """Build a validated Configuration from the current UI values."""
+        return Configuration(
+            auto_exposure=self._auto_exposure_var.get(),
+            exposure_us=float(self._exposure_var.get()),
+            fps=float(self._fps_var.get()),
+            gain_db=float(self._gain_var.get()),
+            black_level=int(float(self._black_var.get())),
+            color_space=self._color_var.get(),
+            wb_gains=tuple(float(var.get()) for var in self._wb_vars),
+        )
+
+    # ------------------------------------------------------------------
+    # Acquisition control
+    # ------------------------------------------------------------------
+
+    def _start(self) -> None:
+        if self._worker is not None:
+            return
+        try:
+            config = self._read_config()
+        except (ConfigurationError, ValueError) as error:
+            messagebox.showerror("Invalid settings", str(error))
+            return
+        # Apply camera-resident settings for the run (manual exposure,
+        # gain, black level; auto mode skips exposure).
+        try:
+            config.apply_to_camera(self._camera)
+        except Exception as error:  # noqa: BLE001 - SDK errors
+            messagebox.showerror("Camera error", str(error))
+            return
+        self._config = config
+        self._processor = make_processor(config.color_space,
+                                         config.wb_gains)
+
+        mode = self._mode_var.get()
+        save_enabled = self._save_var.get()
+        save_dir = self._dir_var.get().strip() or "data"
+        identifier = (self._identifier_var.get().strip()
+                      .replace("/", "_").replace("\\", "_")) or "run"
+        os.makedirs(save_dir, exist_ok=True)
+        ts = acquisition_timestamp()
+
+        try:
+            target = self._build_target(mode, config, ts, identifier,
+                                        save_dir, save_enabled)
+        except (ConfigurationError, ValueError) as error:
+            messagebox.showerror("Invalid settings", str(error))
+            return
+
+        self._stop_event = threading.Event()
+        self._worker = threading.Thread(
+            target=self._run_worker, args=(target,), daemon=True,
+            name="acquisition")
+        self._start_button.config(state="disabled")
+        self._stop_button.config(state="normal")
+        self._status_var.set(f"{mode} running...")
+        self._worker.start()
+
+    def _build_target(self, mode, config, ts, identifier, save_dir,
+                      save_enabled) -> Callable[[], object]:
+        camera = self._camera
+        on_frame = self._on_frame
+        if mode == MODE_SNAPSHOT:
+            session = SnapshotSession(
+                camera, ts, identifier, save_dir=save_dir,
+                save_enabled=save_enabled,
+                fmt=self._format_var.get(), processor=self._processor,
+                on_frame=on_frame)
+            return session.run
+        if mode == MODE_STREAMING:
+            fps = config.fps
+            fps_cap = max_fps(camera.exposure_time_us, camera)
+            if fps_cap is not None and fps > fps_cap:
+                fps = fps_cap
+            auto = None
+            if config.auto_exposure:
+                gain_lo, gain_hi = camera.gain_range
+                auto = AutoExposureController(
+                    camera.exposure_time_range_us,
+                    (camera.convert_gain_to_decibels(gain_lo),
+                     camera.convert_gain_to_decibels(gain_hi)))
+            duration = float(self._duration_var.get() or 0.0)
+            session = StreamingSession(
+                camera, fps=fps, timestamp=ts, identifier=identifier,
+                save_dir=save_dir, save_enabled=save_enabled,
+                duration_s=duration or None, auto_exposure=auto,
+                processor=self._processor, on_frame=on_frame)
+            return lambda: session.run(self._stop_event)
+        # Time Series: manual exposure (README), frozen from the last
+        # streaming auto-exposure run when available.
+        exposure_us = config.exposure_us
+        if self._last_auto is not None:
+            exposure_us = self._last_auto[0]
+        dt_min = minimum_interval_s(exposure_us, camera_fps_max(camera))
+        interval = max(float(self._dt_var.get() or 1.0), dt_min)
+        max_frames = int(float(self._max_frames_var.get() or 0))
+        session = TimeSeriesSession(
+            camera, interval_s=interval, timestamp=ts,
+            identifier=identifier, save_dir=save_dir,
+            save_enabled=save_enabled,
+            max_frames=max_frames or None,
+            processor=self._processor, on_frame=on_frame)
+        return lambda: session.run(self._stop_event)
+
+    def _run_worker(self, target: Callable[[], object]) -> None:
+        try:
+            self._events.put(("done", target()))
+        except Exception as error:  # noqa: BLE001 - reported in the UI
+            self._events.put(("error", error))
+
+    def _stop(self) -> None:
+        self._stop_event.set()
+
+    def _browse(self) -> None:
+        chosen = filedialog.askdirectory()
+        if chosen:
+            self._dir_var.set(chosen)
+
+    def _on_frame(self, bundle: FrameBundle, index: int = 0) -> None:
+        with self._latest_lock:
+            self._latest_bundle = bundle
+        self._frame_counter = index
+
+    # ------------------------------------------------------------------
+    # Event loop
+    # ------------------------------------------------------------------
+
+    def _poll_events(self) -> None:
+        while True:
+            try:
+                kind, payload = self._events.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "error":
+                self._finish_run()
+                self._handle_worker_error(payload)
+                return  # reconnect handling may have replaced everything
+            if kind == "done":
+                self._report_done(payload)
+                self._finish_run()
+        self._draw_latest()
+        self._root.after(_POLL_MS, self._poll_events)
+
+    def _finish_run(self) -> None:
+        self._worker = None
+        self._start_button.config(state="normal")
+        self._stop_button.config(state="disabled")
+
+    def _handle_worker_error(self, error: Exception) -> None:
+        if isinstance(error, (KeyboardInterrupt, AcquisitionError)):
+            text = str(error)
+        else:
+            text = f"{type(error).__name__}: {error}"
+        self._status_var.set(f"Stopped: {text}")
+        if self._service.connection_lost:
+            try:
+                self._camera = self._service.handle_connection_lost()
+                self._status_var.set("Camera reconnected.")
+            except Exception:  # noqa: BLE001 - UserAborted + SDK errors
+                self._root.destroy()
+                return
+
+    def _report_done(self, result: object) -> None:
+        if isinstance(result, StreamingStats):
+            if result.exposure_us > 0:
+                self._last_auto = (result.exposure_us, result.gain_db)
+            self._status_var.set(
+                f"Streaming finished: {result.frames} frames, "
+                f"{result.dropped_mp4} dropped, exposure "
+                f"{result.exposure_us:.1f} us, gain {result.gain_db:.1f} dB")
+        elif isinstance(result, TimeSeriesStats):
+            self._status_var.set(
+                f"Time Series finished: {result.frames} frames "
+                f"at dt = {result.interval_s:g} s")
+        elif isinstance(result, FrameBundle):
+            self._status_var.set(
+                f"Snapshot finished (mean luminance "
+                f"{result.mean_luminance:.1f} / 1023)")
+
+    # ------------------------------------------------------------------
+    # Display + ROI
+    # ------------------------------------------------------------------
+
+    def _draw_latest(self) -> None:
+        with self._latest_lock:
+            bundle = self._latest_bundle
+            self._latest_bundle = None
+        if bundle is None:
+            return
+        self._render(bundle)
+
+    def _render(self, bundle: FrameBundle) -> None:
+        rgb8 = display.bundle_to_rgb8(bundle)
+        canvas_size = (max(self._canvas.winfo_width(), 1),
+                       max(self._canvas.winfo_height(), 1))
+        geom = display.compute_view((rgb8.shape[1], rgb8.shape[0]),
+                                    canvas_size, self._roi)
+        self._geom = geom
+        crop = display.crop_for_view(rgb8, geom)
+        target_size = (max(1, int(geom.crop_w * geom.scale)),
+                       max(1, int(geom.crop_h * geom.scale)))
+        image = Image.fromarray(crop).resize(target_size, Image.NEAREST)
+        self._photo = ImageTk.PhotoImage(image)
+        self._canvas.delete("all")
+        self._canvas.create_image(geom.offset_x, geom.offset_y,
+                                  image=self._photo, anchor="nw")
+        if self._drawing and self._draw_rect is not None:
+            self._canvas.coords(self._draw_rect, *self._live_rect)
+
+    def _reset_view(self) -> None:
+        self._roi = None
+
+    # -- ROI selection (full view only) ---------------------------------
+
+    def _on_press(self, event) -> None:
+        if self._roi is not None or self._geom is None:
+            return
+        self._drawing = True
+        self._draw_start = (event.x, event.y)
+        self._draw_rect = self._canvas.create_rectangle(
+            event.x, event.y, event.x, event.y, outline="yellow")
+
+    def _on_drag(self, event) -> None:
+        if not self._drawing:
+            return
+        self._live_rect = (self._draw_start[0], self._draw_start[1],
+                           event.x, event.y)
+        self._canvas.coords(self._draw_rect, *self._live_rect)
+
+    def _on_release(self, event) -> None:
+        if not self._drawing:
+            return
+        self._drawing = False
+        self._canvas.delete(self._draw_rect)
+        self._draw_rect = None
+        if self._geom is None:
+            return
+        x0, y0 = self._geom.canvas_to_image(self._draw_start[0],
+                                            self._draw_start[1])
+        x1, y1 = self._geom.canvas_to_image(event.x, event.y)
+        image_size = (self._camera.image_width_pixels,
+                      self._camera.image_height_pixels)
+        self._roi = display.normalize_roi((x0, y0, x1, y1), image_size)
+
+    # ------------------------------------------------------------------
+    # Shutdown
+    # ------------------------------------------------------------------
+
+    def close(self) -> None:
+        """Stop any running acquisition and dispose camera + SDK."""
+        self._stop_event.set()
+        worker = self._worker
+        if worker is not None:
+            worker.join(timeout=5.0)
+        self._service.shutdown()
+
+
+def main() -> int:
+    """Connect to the camera (dialog flow) and run the main window."""
+    import sys
+
+    from ..camera import CameraServiceError, UserAbortedError
+
+    service = CameraService()
+    try:
+        camera = service.connect()
+    except UserAbortedError:
+        print("No camera connected — exiting.")
+        return 1
+    except CameraServiceError as error:
+        print(f"Fatal: {error}", file=sys.stderr)
+        return 1
+
+    root = tk.Tk()
+    window = MainWindow(root, service, camera)
+
+    def on_close() -> None:
+        window.close()
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
+    root.mainloop()
+    print("Camera and SDK disposed.")
+    return 0
