@@ -33,6 +33,8 @@ from ..acquisition.processing import COLOR_SPACES
 from ..camera import CameraService
 from ..config import Configuration, ConfigurationError, max_fps
 from ..perspective import PerspectiveTransform
+from ..profiles import (extract_profiles, gaussian_fit, gaussian_overlay,
+                        profile_stats)
 from . import display
 
 #: Fixed display canvas size, in pixels.
@@ -119,6 +121,12 @@ class MainWindow:
 
     def _set_perspective(self, transform: PerspectiveTransform) -> None:
         self._perspective = transform
+        # The corrected display mode is now available (README) — switch
+        # to it so the user immediately sees the result.
+        self._corrected_radio.config(state="normal")
+        self._display_mode_var.set("corrected")
+        if getattr(self, "_last_bundle", None) is not None:
+            self._render(self._last_bundle)
         self._status_var.set(
             "Perspective correction defined: "
             f"{len(transform.source_points)} points, "
@@ -263,12 +271,54 @@ class MainWindow:
         self._canvas.grid(row=0, column=0, sticky="nsew")
         parent.rowconfigure(0, weight=1)
         parent.columnconfigure(0, weight=1)
-        reset = ttk.Button(parent, text="Reset view",
-                           command=self._reset_view)
-        reset.grid(row=1, column=0, pady=4)
+
+        controls = ttk.Frame(parent)
+        controls.grid(row=1, column=0, sticky="we", pady=4)
+        ttk.Button(controls, text="Reset view",
+                   command=self._reset_view).pack(side="left")
+        ttk.Label(controls, text="Display:").pack(side="left", padx=(12, 2))
+        self._display_mode_var = tk.StringVar(value="raw")
+        ttk.Radiobutton(controls, text="Raw", value="raw",
+                        variable=self._display_mode_var).pack(side="left")
+        # Enabled once a perspective correction is defined (README).
+        self._corrected_radio = ttk.Radiobutton(
+            controls, text="Corrected (mm)", value="corrected",
+            variable=self._display_mode_var, state="disabled")
+        self._corrected_radio.pack(side="left", padx=4)
+
+        info = ttk.Frame(parent)
+        info.grid(row=2, column=0, sticky="we")
+        ttk.Label(info, text="Profiles:").pack(side="left")
+        self._profile_info_var = tk.StringVar(value="none")
+        for value, label in (("none", "No information"),
+                             ("stats", "mean/σ statistics"),
+                             ("fit", "Gaussian + baseline fit")):
+            ttk.Radiobutton(info, text=label, value=value,
+                            variable=self._profile_info_var).pack(
+                side="left", padx=4)
+
+        ttk.Label(parent,
+                  text="Horizontal profile (Y = 0 mm):").grid(
+            row=3, column=0, sticky="w")
+        self._h_profile_canvas = tk.Canvas(parent, height=90, bg="black",
+                                           highlightthickness=0)
+        self._h_profile_canvas.grid(row=4, column=0, sticky="we")
+        ttk.Label(parent,
+                  text="Vertical profile (X = 0 mm):").grid(
+            row=5, column=0, sticky="w")
+        self._v_profile_canvas = tk.Canvas(parent, height=90, bg="black",
+                                           highlightthickness=0)
+        self._v_profile_canvas.grid(row=6, column=0, sticky="we")
+        self._clear_profiles()
+
         self._canvas.bind("<Button-1>", self._on_press)
         self._canvas.bind("<B1-Motion>", self._on_drag)
         self._canvas.bind("<ButtonRelease-1>", self._on_release)
+
+    def _clear_profiles(self) -> None:
+        for canvas in (self._h_profile_canvas, self._v_profile_canvas):
+            canvas.delete("all")
+            canvas.create_text(6, 4, text="—", anchor="nw", fill="#666666")
 
     # ------------------------------------------------------------------
     # Settings
@@ -512,6 +562,13 @@ class MainWindow:
 
     def _render(self, bundle: FrameBundle) -> None:
         self._last_bundle = bundle  # kept for re-renders on ROI changes
+        if (self._display_mode_var.get() == "corrected"
+                and self._perspective is not None):
+            self._render_corrected(bundle)
+        else:
+            self._render_raw(bundle)
+
+    def _render_raw(self, bundle: FrameBundle) -> None:
         rgb8 = display.bundle_to_rgb8(bundle)
         canvas_size = (max(self._canvas.winfo_width(), 1),
                        max(self._canvas.winfo_height(), 1))
@@ -529,6 +586,102 @@ class MainWindow:
         if self._drawing and self._draw_rect is not None:
             self._canvas.coords(self._draw_rect, *self._live_rect)
 
+    def _render_corrected(self, bundle: FrameBundle) -> None:
+        transform = self._perspective
+        assert transform is not None
+        rgb8 = display.bundle_to_rgb8(bundle)
+        corrected = transform.apply(rgb8)
+        canvas_size = (max(self._canvas.winfo_width(), 1),
+                       max(self._canvas.winfo_height(), 1))
+        geom = display.compute_view((corrected.shape[1], corrected.shape[0]),
+                                    canvas_size)
+        self._geom = geom
+        crop = display.crop_for_view(corrected, geom)
+        target_size = (max(1, int(geom.crop_w * geom.scale)),
+                       max(1, int(geom.crop_h * geom.scale)))
+        self._photo = ImageTk.PhotoImage(
+            Image.fromarray(crop).resize(target_size, Image.NEAREST))
+        self._canvas.delete("all")
+        self._canvas.create_image(geom.offset_x, geom.offset_y,
+                                  image=self._photo, anchor="nw")
+        # Calibrated axes (mm) — corner labels on the fitted image.
+        x_min, x_max = transform.x_range
+        y_min, y_max = transform.y_range
+        self._canvas.create_text(
+            6, 6, text=f"Y: {y_min:g} .. {y_max:g} mm",
+            anchor="nw", fill="white")
+        self._canvas.create_text(
+            canvas_size[0] - 6, canvas_size[1] - 6,
+            text=f"X: {x_min:g} .. {x_max:g} mm",
+            anchor="se", fill="white")
+        self._draw_profiles(bundle)
+
+    def _draw_profiles(self, bundle: FrameBundle) -> None:
+        transform = self._perspective
+        assert transform is not None
+        corrected_luma = transform.apply(bundle.luminance16)
+        profiles = extract_profiles(corrected_luma, transform.x_range,
+                                    transform.y_range)
+        mode = self._profile_info_var.get()
+        # README: the Gaussian fit is not available in Streaming (compute
+        # budget) — fall back to statistics.
+        effective = ("stats" if (mode == "fit"
+                                 and self._mode_var.get() == MODE_STREAMING)
+                     else mode)
+        for canvas, label_text, coords, values in (
+                (self._h_profile_canvas, "Horizontal (Y = 0 mm)",
+                 profiles.x_mm, profiles.horizontal),
+                (self._v_profile_canvas, "Vertical (X = 0 mm)",
+                 profiles.y_mm, profiles.vertical)):
+            overlay = None
+            if effective == "stats":
+                stats = profile_stats(coords, values)
+                overlay = gaussian_overlay(
+                    coords, baseline=float(values.min()),
+                    amplitude=float(values.max() - values.min()),
+                    center=stats["mean"], sigma=max(stats["sigma"], 1e-6))
+                text = (f"{label_text}: center {stats['mean']:.2f} mm, "
+                        f"width {stats['sigma']:.2f} mm")
+            elif effective == "fit":
+                fit = gaussian_fit(coords, values)
+                overlay = gaussian_overlay(coords, **fit)
+                text = (f"{label_text}: x0 {fit['center']:.2f} mm, "
+                        f"FWHM {fit['sigma'] * 2.3548:.2f} mm, "
+                        f"A {fit['amplitude']:.1f}, "
+                        f"base {fit['baseline']:.1f}")
+            else:
+                text = label_text
+            self._draw_profile_curve(canvas, coords, values, overlay, text)
+
+    @staticmethod
+    def _draw_profile_curve(canvas, coords, values, overlay, text) -> None:
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 60)
+        height = max(canvas.winfo_height(), 30)
+        values = np.asarray(values, dtype=np.float64)
+        if values.size < 2:
+            return
+        vmin, vmax = float(values.min()), float(values.max())
+        span = (vmax - vmin) or 1.0
+        c0, c1 = float(coords[0]), float(coords[-1])
+        cspan = (c1 - c0) or 1.0
+
+        def xy(coord: float, value: float):
+            px = 4 + (coord - c0) / cspan * (width - 8)
+            py = height - 4 - (value - vmin) / span * (height - 14)
+            return px, py
+
+        points = []
+        for coord, value in zip(coords, values):
+            points.extend(xy(float(coord), float(value)))
+        canvas.create_line(*points, fill="#00ffff")
+        if overlay is not None:
+            points = []
+            for coord, value in zip(coords, np.asarray(overlay)):
+                points.extend(xy(float(coord), float(value)))
+            canvas.create_line(*points, fill="#ffff00", dash=(4, 2))
+        canvas.create_text(6, 4, text=text, anchor="nw", fill="white")
+
     def _reset_view(self) -> None:
         self._roi = None
         if getattr(self, "_last_bundle", None) is not None:
@@ -537,8 +690,9 @@ class MainWindow:
     # -- ROI selection (full view only) ---------------------------------
 
     def _on_press(self, event) -> None:
-        if self._roi is not None or self._geom is None:
-            return
+        if (self._roi is not None or self._geom is None
+                or self._display_mode_var.get() != "raw"):
+            return  # ROI zoom is a raw-mode feature (README)
         self._drawing = True
         self._draw_start = (event.x, event.y)
         self._draw_rect = self._canvas.create_rectangle(
