@@ -32,6 +32,7 @@ from ..acquisition import (AcquisitionError, AutoExposureController,
 from ..acquisition.processing import COLOR_SPACES
 from ..camera import CameraService
 from ..config import Configuration, ConfigurationError, max_fps
+from ..perspective import PerspectiveTransform
 from . import display
 
 #: Fixed display canvas size, in pixels.
@@ -72,6 +73,7 @@ class MainWindow:
         # switching Streaming -> Time Series freezes them as manual).
         self._last_auto: Optional[tuple] = None
         self._live_ae: Optional[tuple] = None
+        self._perspective: Optional[PerspectiveTransform] = None
         self._build_ui()
         self._poll_events()
 
@@ -81,6 +83,7 @@ class MainWindow:
 
     def _build_ui(self) -> None:
         self._root.title("Chromoscope DAQ")
+        self._build_menu()
         main = ttk.Frame(self._root, padding=8)
         main.grid(row=0, column=0, sticky="nsew")
         self._root.columnconfigure(0, weight=1)
@@ -98,6 +101,28 @@ class MainWindow:
         self._build_acquisition_frame(left)
         self._build_canvas(right)
         self._on_mode_change()  # initial state: Streaming selected
+
+    def _build_menu(self) -> None:
+        menu = tk.Menu(self._root)
+        correction = tk.Menu(menu, tearoff=False)
+        correction.add_command(label="Perspective correction...",
+                               command=self._open_perspective)
+        menu.add_cascade(label="Correction", menu=correction)
+        self._root.config(menu=menu)
+
+    def _open_perspective(self) -> None:
+        from .perspective_dialog import PerspectiveDialog
+        PerspectiveDialog(
+            self._root, self._perspective,
+            on_apply=self._set_perspective,
+            get_last_frame=lambda: getattr(self, "_last_bundle", None))
+
+    def _set_perspective(self, transform: PerspectiveTransform) -> None:
+        self._perspective = transform
+        self._status_var.set(
+            "Perspective correction defined: "
+            f"{len(transform.source_points)} points, "
+            f"X {transform.x_range} mm, Y {transform.y_range} mm.")
 
     def _build_mode_frame(self, parent) -> None:
         box = ttk.LabelFrame(parent, text="Acquisition mode", padding=6)
