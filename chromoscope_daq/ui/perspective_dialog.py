@@ -16,8 +16,8 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from . import display
-from .perspective import (PerspectiveError, PerspectiveTransform,
-                          load_image_rgb8)
+from ..perspective import (PerspectiveError, PerspectiveTransform,
+                           load_image_rgb8)
 
 #: Marker colors for the 4 selectable points.
 _POINT_COLORS = ("#ff4040", "#40ff40", "#4080ff", "#ffff40")
