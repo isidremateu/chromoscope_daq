@@ -18,6 +18,18 @@ _LUMA_R = 0.2126
 _LUMA_G = 0.7152
 _LUMA_B = 0.0722
 
+#: Supported color spaces (README 'Configuration settings').
+UNPROCESSED = "Unprocessed"
+LINEAR_SRGB = "linear sRGB"
+SRGB = "sRGB"
+COLOR_SPACES = (SRGB, LINEAR_SRGB, UNPROCESSED)
+
+#: White balance gains (R, G, B) applied for the sRGB color spaces.
+WB_DEFAULTS = (2.7, 1.0, 3.15)
+
+#: Threshold of the sRGB transfer function (IEC 61966-2-1).
+_SRGB_LINEAR_MAX = 0.0031308
+
 #: 10-bit data stored in 16-bit buffers; JPG/MP4 are 8-bit via integer /4.
 BIT_DEPTH = 10
 _SATURATION = (1 << BIT_DEPTH) - 1  # 1023
@@ -46,9 +58,50 @@ def to_bgr8(rgb16: np.ndarray) -> np.ndarray:
 def default_processor(raw16: np.ndarray) -> FrameBundle:
     """Default Unprocessed-color-space pipeline: demosaic -> luminance -> 8-bit."""
     rgb16 = demosaic_bayer(raw16)
-    luma16 = luminance_bt709(rgb16).astype(np.uint16)
+    luma16 = np.rint(luminance_bt709(rgb16)).astype(np.uint16)
     bgr8 = to_bgr8(rgb16)
     return FrameBundle(raw16, rgb16, luma16, bgr8, float(luma16.mean()))
+
+
+def _srgb_encode(norm: np.ndarray) -> np.ndarray:
+    """sRGB transfer function on values normalized to [0, 1]."""
+    linear = 12.92 * norm
+    exp_part = (1.055 * np.power(np.maximum(norm, _SRGB_LINEAR_MAX),
+                                 1.0 / 2.4) - 0.055)
+    return np.where(norm <= _SRGB_LINEAR_MAX, linear, exp_part)
+
+
+def make_processor(color_space: str = UNPROCESSED,
+                   wb_gains: Optional[tuple] = None) -> Processor:
+    """Build a Processor implementing the selected color space.
+
+    - Unprocessed: raw Bayer demosaiced to R, G, B (no WB, no gamma).
+    - linear sRGB: demosaic, per-channel white balance gains, clipped to
+      the 0-1023 scale (physically meaningful flux calibration).
+    - sRGB: linear sRGB followed by the sRGB gamma (display-referred).
+
+    ``raw16`` is never modified: raw TIFFs always store the camera data,
+    and luminance is computed from the (processed) R, G, B channels.
+    """
+    if color_space == UNPROCESSED:
+        return default_processor
+    if color_space not in COLOR_SPACES:
+        raise ValueError(f"unknown color space {color_space!r}; "
+                         f"expected one of {COLOR_SPACES}")
+    gains = np.asarray(wb_gains if wb_gains is not None else WB_DEFAULTS,
+                       dtype=np.float32)
+
+    def processor(raw16: np.ndarray) -> FrameBundle:
+        rgb = demosaic_bayer(raw16).astype(np.float32)
+        rgb = np.clip(rgb * gains, 0.0, float(_SATURATION))
+        if color_space == SRGB:
+            rgb = _srgb_encode(rgb / _SATURATION) * _SATURATION
+        rgb16 = np.rint(rgb).astype(np.uint16)
+        luma16 = np.rint(luminance_bt709(rgb16)).astype(np.uint16)
+        bgr8 = to_bgr8(rgb16)
+        return FrameBundle(raw16, rgb16, luma16, bgr8, float(luma16.mean()))
+
+    return processor
 
 
 def save_tif16(path: str, raw16: np.ndarray) -> None:

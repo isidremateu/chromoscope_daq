@@ -8,6 +8,7 @@ runnable once (``run``) and returning a stats object. File naming follows
 from .base import AcquisitionError, FrameBundle, Processor, poll_frame_copy
 from .naming import acquisition_timestamp, build_basename, build_filename
 from .autoexposure import AutoExposureController
+from .processing import COLOR_SPACES, default_processor, make_processor
 from .writers import Mp4Writer, TiffStackWriter
 from .snapshot import SnapshotSession, save_snapshot
 from .streaming import StreamingSession, StreamingStats
@@ -19,6 +20,9 @@ __all__ = [
     "FrameBundle",
     "Processor",
     "poll_frame_copy",
+    "COLOR_SPACES",
+    "default_processor",
+    "make_processor",
     "acquisition_timestamp",
     "build_basename",
     "build_filename",
