@@ -29,8 +29,17 @@ def main() -> int:
     dll = os.path.join(lib, "thorlabs_tsi_camera_sdk.dll")
     print(f"SDK DLL       : {os.path.isfile(dll)} ({dll})")
     if not os.path.isfile(dll):
+        zip_path = os.path.join(
+            os.getcwd(), "Scientific Camera Interfaces", "SDK",
+            "Python Toolkit", "thorlabs_tsi_camera_python_sdk_package.zip")
+        print(f"Vendored zip  : {os.path.isfile(zip_path)} ({zip_path})")
         print("-> The SDK pip package did not install the native DLLs.")
-        print("   Re-install from the zip (see README, step 3).")
+        print("   With the latest code the app extracts them from the zip")
+        print("   automatically; if the zip line above says False, copy the")
+        print("   'Scientific Camera Interfaces' folder from cernbox, or")
+        print("   copy a working installation's")
+        print("   ...\\site-packages\\thorlabs_tsi_sdk\\lib folder here:")
+        print(f"   {lib}")
         return 1
 
     print("\n1) Full-path load test...")

@@ -82,12 +82,21 @@ def _add_sdk_dll_directory() -> None:
         zip_path = os.path.join(
             repo_root, "Scientific Camera Interfaces", "SDK",
             "Python Toolkit", "thorlabs_tsi_camera_python_sdk_package.zip")
-        if os.path.isfile(zip_path):
+        if not os.path.isfile(zip_path):
+            print(f"SDK DLL self-setup: vendored zip not found at {zip_path}. "
+                  "Copy the 'Scientific Camera Interfaces' folder (with the "
+                  "zip) into the repository, or copy the DLL folder from a "
+                  "working installation into "
+                  f"{lib_dir}.", file=sys.stderr)
+        else:
             try:
                 lib_dir = (_extract_dlls_from_zip(zip_path, package_dir)
                            or lib_dir)
-            except (OSError, zipfile.BadZipFile):
-                pass
+                print(f"SDK DLL self-setup: extracted native DLLs to "
+                      f"{lib_dir}.", file=sys.stderr)
+            except (OSError, zipfile.BadZipFile) as error:
+                print(f"SDK DLL self-setup: extraction from {zip_path} "
+                      f"failed: {error}", file=sys.stderr)
     if os.path.isfile(os.path.join(lib_dir,
                                    "thorlabs_tsi_camera_sdk.dll")):
         _register_dll_dir(lib_dir)

@@ -21,3 +21,6 @@ data/
 
 # Saved calibration / configuration files
 calibrations/
+
+# Staged SDK DLLs for manual transfer
+sdk_dlls/
