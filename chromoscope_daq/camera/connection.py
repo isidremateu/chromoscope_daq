@@ -39,9 +39,17 @@ def _add_sdk_dll_directory() -> None:
         package_dir = os.path.dirname(os.path.abspath(thorlabs_tsi_sdk.__file__))
     except ImportError:
         return
-    for arch in ("windows-x86_64", "windows-x86"):
-        lib_dir = os.path.join(package_dir, "lib", arch)
-        if not os.path.isdir(lib_dir):
+    # pip-installed package: DLLs sit flat in thorlabs_tsi_sdk/lib
+    # (setup.py maps the 'thorlabs_tsi_sdk.lib' subpackage there). The
+    # arch subfolders exist in the source tree / native toolkit layouts.
+    candidates = [
+        os.path.join(package_dir, "lib"),
+        os.path.join(package_dir, "lib", "windows-x86_64"),
+        os.path.join(package_dir, "lib", "windows-x86"),
+    ]
+    for lib_dir in candidates:
+        if not os.path.isfile(os.path.join(lib_dir,
+                                           "thorlabs_tsi_camera_sdk.dll")):
             continue
         os.environ["PATH"] = lib_dir + os.pathsep + os.environ.get("PATH", "")
         try:
