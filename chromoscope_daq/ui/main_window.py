@@ -123,7 +123,10 @@ class MainWindow:
         right = ttk.Frame(main)
         right.grid(row=0, column=2, sticky="ns", padx=(8, 0))
         main.rowconfigure(0, weight=1)
-        main.columnconfigure(1, weight=1)
+        # 2:1 split of the resizable space between the 2D view and the
+        # profile canvases.
+        main.columnconfigure(1, weight=2)
+        main.columnconfigure(2, weight=1)
 
         self._build_mode_frame(left)
         self._build_settings_frame(left)
@@ -1180,6 +1183,9 @@ class MainWindow:
         span = (vmax - vmin) or 1.0
         c0, c1 = float(coords[0]), float(coords[-1])
         cspan = (c1 - c0) or 1.0
+        # The vertical profile's coordinate axis is descending (top ->
+        # bottom); ticks must be computed over the ascending range.
+        c_lo, c_hi = (c0, c1) if c0 <= c1 else (c1, c0)
         small = _TICK_FONT
 
         def xy(coord: float, value: float):
@@ -1189,7 +1195,7 @@ class MainWindow:
 
         # Dashed grid lines behind the curve (x ticks and, when the
         # values span a range, y ticks).
-        for tick in nice_ticks(c0, c1, target=4):
+        for tick in nice_ticks(c_lo, c_hi, target=4):
             px, _ = xy(tick, vmin)
             canvas.create_line(px, 4, px, height - 16,
                                fill="#404040", dash=(2, 4))
