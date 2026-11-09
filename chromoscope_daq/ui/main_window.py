@@ -49,8 +49,10 @@ CANVAS_SIZE = (720, 540)
 #: Profile canvas geometry: 2:1 width ratio with the 2D view; the
 #: canvases expand vertically to fill the same space as the 2D view.
 PROFILE_SIZE = (CANVAS_SIZE[0] // 2, 150)
-#: Colorbar width, in pixels.
-_COLORBAR_WIDTH = 52
+#: Colorbar width, in pixels (bar + labels to its right).
+_COLORBAR_WIDTH = 120
+#: Colorbar bar width inside the canvas.
+_COLORBAR_BAR = 30
 #: Font for axis ticks / scale labels (deliberately large for readability).
 _TICK_FONT = ("TkDefaultFont", 14)
 #: UI refresh period for the event/queue poll, in ms.
@@ -121,7 +123,7 @@ class MainWindow:
         center = ttk.Frame(main)
         center.grid(row=0, column=1, sticky="nsew")
         right = ttk.Frame(main)
-        right.grid(row=0, column=2, sticky="ns", padx=(8, 0))
+        right.grid(row=0, column=2, sticky="nsew", padx=(8, 0))
         main.rowconfigure(0, weight=1)
         # 2:1 split of the resizable space between the 2D view and the
         # profile canvases.
@@ -1022,11 +1024,11 @@ class MainWindow:
                      and self._calibration is not None)
         corrected_luma = transform.apply(bundle.luminance16)
         if flux_mode:
-            # Particle flux: grayscale display, normalized to the peak.
+            # Particle flux: afmhot-style colormap, normalized to the peak.
             scalar = self._calibration.apply(corrected_luma)
             peak = float(scalar.max())
-            shown = (scalar / (peak if peak > 0 else 1.0) * 255.0
-                     ).clip(0, 255).astype(np.uint8)
+            norm = scalar / (peak if peak > 0 else 1.0)
+            shown = display.apply_afmhot(norm)
             self._draw_colorbar(peak)
         else:
             shown = transform.apply(display.bundle_to_rgb8(bundle))
@@ -1111,20 +1113,22 @@ class MainWindow:
         bar = self._colorbar
         bar.delete("all")
         height = max(bar.winfo_height(), CANVAS_SIZE[1])
-        width = max(bar.winfo_width(), _COLORBAR_WIDTH)
         strips = 64
+        lut = display.afmhot_lut()
         for index in range(strips):
             y0 = height - (index + 1) * height / strips
             y1 = height - index * height / strips
-            shade = int(255 * (index + 0.5) / strips)
-            bar.create_rectangle(4, y0, width - 16, y1, outline="",
-                                 fill=f"#{shade:02x}{shade:02x}{shade:02x}")
+            shade = lut[int(255 * (index + 0.5) / strips)]
+            color = f"#{shade[0]:02x}{shade[1]:02x}{shade[2]:02x}"
+            bar.create_rectangle(4, y0, 4 + _COLORBAR_BAR, y1, outline="",
+                                 fill=color)
         small = _TICK_FONT
-        bar.create_text(width - 12, 6, text=f"{peak:.3g}", anchor="ne",
+        label_x = 4 + _COLORBAR_BAR + 6
+        bar.create_text(label_x, 6, text=f"{peak:.3g}", anchor="nw",
                         fill="white", font=small)
-        bar.create_text(width - 12, height / 2, text=f"{peak / 2:.3g}",
-                        anchor="e", fill="white", font=small)
-        bar.create_text(width - 12, height - 6, text="0", anchor="se",
+        bar.create_text(label_x, height / 2, text=f"{peak / 2:.3g}",
+                        anchor="w", fill="white", font=small)
+        bar.create_text(label_x, height - 6, text="0", anchor="sw",
                         fill="white", font=small)
 
     def _clear_colorbar(self) -> None:

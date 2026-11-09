@@ -16,7 +16,7 @@ import numpy as np
 from ..acquisition import FrameBundle
 
 __all__ = ["bundle_to_rgb8", "normalize_roi", "ViewGeometry", "compute_view",
-           "crop_for_view"]
+           "crop_for_view", "afmhot_lut", "apply_afmhot"]
 
 
 def bundle_to_rgb8(bundle: FrameBundle) -> np.ndarray:
@@ -92,3 +92,40 @@ def crop_for_view(rgb8: np.ndarray, geom: ViewGeometry) -> np.ndarray:
     """Source crop of the display image for the given view geometry."""
     return rgb8[geom.crop_y:geom.crop_y + geom.crop_h,
                 geom.crop_x:geom.crop_x + geom.crop_w]
+
+
+# afmhot-style colormap (black -> deep red -> orange -> yellow -> white),
+# as a piecewise-linear ramp of (position, R, G, B) stops.
+_AFMHOT_STOPS = (
+    (0.00, (0, 0, 0)),
+    (0.20, (60, 0, 0)),
+    (0.40, (160, 20, 0)),
+    (0.60, (230, 80, 0)),
+    (0.80, (255, 170, 30)),
+    (0.92, (255, 235, 130)),
+    (1.00, (255, 255, 255)),
+)
+
+_LUT_CACHE: Optional[np.ndarray] = None
+
+
+def afmhot_lut() -> np.ndarray:
+    """256 x 3 uint8 lookup table for the afmhot-style colormap."""
+    global _LUT_CACHE
+    if _LUT_CACHE is None:
+        positions = np.array([stop[0] for stop in _AFMHOT_STOPS])
+        lut = np.zeros((256, 3), dtype=np.uint8)
+        for channel in range(3):
+            values = np.array([stop[1][channel] for stop in _AFMHOT_STOPS],
+                              dtype=np.float64)
+            lut[:, channel] = np.interp(
+                np.arange(256) / 255.0, positions, values).round()
+        _LUT_CACHE = lut
+    return _LUT_CACHE
+
+
+def apply_afmhot(norm: np.ndarray) -> np.ndarray:
+    """Map values in [0, 1] to RGB uint8 via the afmhot-style colormap."""
+    norm = np.clip(np.asarray(norm, dtype=np.float64), 0.0, 1.0)
+    indices = (norm * 255.0).round().astype(np.intp)
+    return afmhot_lut()[indices]
