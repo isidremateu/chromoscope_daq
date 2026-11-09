@@ -34,7 +34,7 @@ from ..acquisition import (AcquisitionError, AutoExposureController,
                            acquisition_timestamp, build_basename,
                            camera_fps_max, make_processor, minimum_interval_s)
 from ..acquisition.processing import COLOR_SPACES
-from ..calibration import IntensityCalibration
+from ..calibration import CalibrationError, IntensityCalibration
 from ..camera import CameraService
 from ..config import Configuration, ConfigurationError, max_fps
 from ..perspective import PerspectiveError, PerspectiveTransform
@@ -647,6 +647,12 @@ class MainWindow:
             self._status_var.set(f"Could not save settings: {error}")
 
     def _load_session(self, path: str, quiet: bool = False) -> bool:
+        if not os.path.isfile(path):
+            # First run: nothing to restore, silently continue.
+            if not quiet:
+                messagebox.showerror("Settings",
+                                     f"Settings file not found: {path}")
+            return False
         try:
             state = session_config.load_settings(path)
             self._apply_session_state(state)
