@@ -46,10 +46,13 @@ from . import display
 
 #: Fixed display canvas size, in pixels.
 CANVAS_SIZE = (720, 540)
-#: Profile canvas geometry.
-PROFILE_SIZE = (300, 130)
+#: Profile canvas geometry: 2:1 width ratio with the 2D view; the
+#: canvases expand vertically to fill the same space as the 2D view.
+PROFILE_SIZE = (CANVAS_SIZE[0] // 2, 150)
 #: Colorbar width, in pixels.
 _COLORBAR_WIDTH = 52
+#: Font for axis ticks / scale labels (deliberately large for readability).
+_TICK_FONT = ("TkDefaultFont", 14)
 #: UI refresh period for the event/queue poll, in ms.
 _POLL_MS = 33
 
@@ -410,14 +413,14 @@ class MainWindow:
         self._h_profile_canvas = tk.Canvas(
             parent, width=PROFILE_SIZE[0], height=PROFILE_SIZE[1],
             bg="black", highlightthickness=0)
-        self._h_profile_canvas.pack(fill="x")
+        self._h_profile_canvas.pack(fill="both", expand=True)
         self._v_label_var = tk.StringVar()
         ttk.Label(parent, textvariable=self._v_label_var).pack(
             anchor="w", pady=(4, 0))
         self._v_profile_canvas = tk.Canvas(
             parent, width=PROFILE_SIZE[0], height=PROFILE_SIZE[1],
             bg="black", highlightthickness=0)
-        self._v_profile_canvas.pack(fill="x")
+        self._v_profile_canvas.pack(fill="both", expand=True)
         self._clear_profiles()
 
     def _clear_profiles(self) -> None:
@@ -1042,7 +1045,7 @@ class MainWindow:
 
     def _draw_grid(self, width: int, height: int, geom, transform) -> None:
         """Dashed mm grid over the corrected view, with tick labels."""
-        small = ("TkDefaultFont", 7)
+        small = _TICK_FONT
         canvas_w = max(self._canvas.winfo_width(), 1)
         canvas_h = max(self._canvas.winfo_height(), 1)
         for x_mm in nice_ticks(*transform.x_range):
@@ -1079,7 +1082,7 @@ class MainWindow:
             shade = int(255 * (index + 0.5) / strips)
             bar.create_rectangle(4, y0, width - 16, y1, outline="",
                                  fill=f"#{shade:02x}{shade:02x}{shade:02x}")
-        small = ("TkDefaultFont", 7)
+        small = _TICK_FONT
         bar.create_text(width - 12, 6, text=f"{peak:.3g}", anchor="ne",
                         fill="white", font=small)
         bar.create_text(width - 12, height / 2, text=f"{peak / 2:.3g}",
@@ -1143,7 +1146,7 @@ class MainWindow:
         span = (vmax - vmin) or 1.0
         c0, c1 = float(coords[0]), float(coords[-1])
         cspan = (c1 - c0) or 1.0
-        small = ("TkDefaultFont", 7)
+        small = _TICK_FONT
 
         def xy(coord: float, value: float):
             px = 4 + (coord - c0) / cspan * (width - 8)
