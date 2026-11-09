@@ -1216,7 +1216,7 @@ class MainWindow:
             canvas.create_line(*points, fill="#ffff00", dash=(4, 2))
         canvas.create_text(6, 4, text=text, anchor="nw", fill="white")
         # Axis ticks: mm values along the bottom, value scale on the right.
-        for tick in nice_ticks(c0, c1, target=4):
+        for tick in nice_ticks(c_lo, c_hi, target=4):
             px, _ = xy(tick, vmin)
             canvas.create_text(px, height - 2, text=f"{tick:g}", anchor="s",
                                fill="#aaaaaa", font=small)
