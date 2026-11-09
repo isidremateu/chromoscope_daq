@@ -280,6 +280,36 @@ class MainWindow:
                   wraplength=220, justify="left").pack(
             anchor="w", pady=(6, 0), fill="x")
 
+    def _update_variant_states(self) -> None:
+        """Variant saving: Snapshot/Time Series only, needs a correction;
+        the calibrated variant additionally needs a calibration."""
+        mode = self._mode_var.get()
+        can_correct = (mode != MODE_STREAMING
+                       and self._perspective is not None)
+        self._save_corrected_check.config(
+            state="normal" if can_correct else "disabled")
+        if not can_correct:
+            self._save_corrected_var.set(False)
+        can_calibrate = can_correct and self._calibration is not None
+        self._save_calibrated_check.config(
+            state="normal" if can_calibrate else "disabled")
+        if not can_calibrate:
+            self._save_calibrated_var.set(False)
+
+    def _on_mode_change(self) -> None:
+        """Make the format selector reflect what the mode actually saves."""
+        mode = self._mode_var.get()
+        if mode == MODE_SNAPSHOT:
+            self._format_combo.config(state="readonly")
+            self._format_var.set(self._last_fmt)
+        else:
+            if self._format_combo.cget("state") == "readonly":
+                self._last_fmt = self._format_var.get()
+            self._format_combo.config(state="disabled")
+            self._format_var.set("mp4" if mode == MODE_STREAMING
+                                 else "tif + OME")
+        self._update_variant_states()
+
     # -- center column: 2D view + colorbar -------------------------------
 
     def _build_display(self, parent) -> None:
