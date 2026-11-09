@@ -43,12 +43,16 @@ def corrected_rgb16(bundle: FrameBundle,
 
 def corrected_scalar(bundle: FrameBundle, transform: PerspectiveTransform,
                      calibration: Optional[IntensityCalibration],
-                     ) -> np.ndarray:
-    """Corrected luminance, or flux when a calibration is given (float64)."""
+                     exposure_us: Optional[float] = None) -> np.ndarray:
+    """Corrected luminance, or normalized flux when a calibration is given.
+
+    ``exposure_us`` is the current exposure time; the flux is normalized
+    by the calibration's reference exposure (see IntensityCalibration.apply).
+    """
     luma = transform.apply(bundle.luminance16)
     if calibration is None:
         return luma
-    return calibration.apply(luma)
+    return calibration.apply(luma, exposure_us)
 
 
 def save_snapshot_variants(bundle: FrameBundle,
@@ -56,7 +60,9 @@ def save_snapshot_variants(bundle: FrameBundle,
                            calibration: Optional[IntensityCalibration],
                            path_no_ext: str, fmt: str,
                            save_corrected: bool,
-                           save_calibrated: bool) -> List[str]:
+                           save_calibrated: bool,
+                           exposure_us: Optional[float] = None
+                           ) -> List[str]:
     """Save the Snapshot-mode variants; returns the written paths."""
     saved: List[str] = []
     if save_corrected:
@@ -69,7 +75,7 @@ def save_snapshot_variants(bundle: FrameBundle,
             save_tif16(path, corrected)
         saved.append(path)
     if save_calibrated:
-        flux = corrected_scalar(bundle, transform, calibration)
+        flux = corrected_scalar(bundle, transform, calibration, exposure_us)
         path = f"{path_no_ext}{CALIBRATED_SUFFIX}.tif"
         save_float32_tif(path, flux)
         saved.append(path)
@@ -87,9 +93,11 @@ class TimeSeriesVariantWriters:
     def __init__(self, timestamp: str, identifier: str, save_dir: str,
                  transform: PerspectiveTransform,
                  calibration: Optional[IntensityCalibration],
-                 save_corrected: bool, save_calibrated: bool) -> None:
+                 save_corrected: bool, save_calibrated: bool,
+                 exposure_us: Optional[float] = None) -> None:
         self._transform = transform
         self._calibration = calibration
+        self._exposure_us = exposure_us
         self._corrected: Optional[tuple] = None
         self._calibrated: Optional[tuple] = None
         if save_corrected:
@@ -122,7 +130,8 @@ class TimeSeriesVariantWriters:
             self._corrected[1].write(corrected)
         if self._calibrated is not None:
             flux = corrected_scalar(bundle, self._transform,
-                                    self._calibration).astype(np.float32)
+                                    self._calibration,
+                                    self._exposure_us).astype(np.float32)
             self._calibrated[0].write(flux)
             self._calibrated[1].write(flux)
 

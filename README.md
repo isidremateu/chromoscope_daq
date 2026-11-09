@@ -65,7 +65,7 @@ The user can define a calibration function for transforming luminance (calculate
     - power law: y = a * x^b + c
     - logarithmic: y = a * ln(x + b) + c 
 
-The calibration functions can be saved and loaded from disk using json files.
+The calibration functions can be saved and loaded from disk using json files. The calibration is defined for a reference exposure time (set in the calibration menu, defaulting to the camera's current exposure); the flux is computed as flux = f_cal(luminance) * t_norm / t_current, so it remains consistent when the exposure time changes.
 
 ## Display modes
 

@@ -20,12 +20,14 @@ class CalibrationDialog(tk.Toplevel):
     """Editor for one intensity calibration definition."""
 
     def __init__(self, master, calibration: Optional[IntensityCalibration],
-                 on_apply: Callable[[IntensityCalibration], None]) -> None:
+                 on_apply: Callable[[IntensityCalibration], None],
+                 default_exposure_us: float = 1000.0) -> None:
         super().__init__(master)
         self.title("Intensity calibration")
         self.transient(master)
         self.grab_set()
         self._on_apply_cb = on_apply
+        self._default_exposure_us = float(default_exposure_us)
         self._json_path: Optional[str] = None
         self._build_ui()
         if calibration is not None:
@@ -33,6 +35,9 @@ class CalibrationDialog(tk.Toplevel):
             self._on_kind_change()
             for var, value in zip(self._coeff_vars, calibration.coefficients):
                 var.set(f"{value:g}")
+            self._exposure_var.set(f"{calibration.exposure_norm_us:g}")
+        else:
+            self._exposure_var.set(f"{self._default_exposure_us:g}")
 
     def _build_ui(self) -> None:
         body = ttk.Frame(self, padding=10)
@@ -63,8 +68,20 @@ class CalibrationDialog(tk.Toplevel):
             self._coeff_labels.append(coeff_label)
             self._coeff_entries.append(entry)
 
+        self._exposure_var = tk.StringVar()
+        exposure_row = ttk.Frame(body)
+        exposure_row.grid(row=5, column=0, columnspan=2, sticky="w",
+                          pady=(6, 0))
+        ttk.Label(exposure_row,
+                  text="Exposure normalization [us]:").pack(side="left")
+        ttk.Entry(exposure_row, textvariable=self._exposure_var,
+                  width=12).pack(side="left", padx=4)
+        ttk.Label(exposure_row,
+                  text="flux = f(luminance) * t_norm / t_current",
+                  foreground="#888888").pack(side="left", padx=8)
+
         buttons = ttk.Frame(body)
-        buttons.grid(row=5, column=0, columnspan=2, sticky="we",
+        buttons.grid(row=6, column=0, columnspan=2, sticky="we",
                      pady=(10, 0))
         ttk.Button(buttons, text="Save json...",
                    command=self._save_json).pack(side="left")
@@ -97,8 +114,9 @@ class CalibrationDialog(tk.Toplevel):
         count = COEFF_COUNTS[kind]
         coefficients = tuple(float(var.get()) for var in self._coeff_vars
                              [:count])
-        calibration = IntensityCalibration(kind=kind,
-                                           coefficients=coefficients)
+        calibration = IntensityCalibration(
+            kind=kind, coefficients=coefficients,
+            exposure_norm_us=float(self._exposure_var.get()))
         calibration.validate()
         return calibration
 
@@ -147,3 +165,4 @@ class CalibrationDialog(tk.Toplevel):
         self._on_kind_change()
         for var, value in zip(self._coeff_vars, calibration.coefficients):
             var.set(f"{value:g}")
+        self._exposure_var.set(f"{calibration.exposure_norm_us:g}")

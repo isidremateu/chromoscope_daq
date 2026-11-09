@@ -473,7 +473,8 @@ class MainWindow:
     def _open_calibration(self) -> None:
         from .calibration_dialog import CalibrationDialog
         CalibrationDialog(self._root, self._calibration,
-                          on_apply=self._set_calibration)
+                          on_apply=self._set_calibration,
+                          default_exposure_us=self._camera.exposure_time_us)
 
     def _set_calibration(self, calibration: IntensityCalibration,
                          source: Optional[str] = None) -> None:
@@ -811,7 +812,8 @@ class MainWindow:
                         save_dir, build_basename(ts, identifier))
                     save_snapshot_variants(
                         bundle, self._perspective, self._calibration,
-                        path_no_ext, fmt, save_corrected, save_calibrated)
+                        path_no_ext, fmt, save_corrected, save_calibrated,
+                        self._camera.exposure_time_us)
                 return bundle
 
             return run_snapshot
@@ -852,7 +854,8 @@ class MainWindow:
                     and (save_corrected or save_calibrated)):
                 variant_writers = TimeSeriesVariantWriters(
                     ts, identifier, save_dir, self._perspective,
-                    self._calibration, save_corrected, save_calibrated)
+                    self._calibration, save_corrected, save_calibrated,
+                    self._camera.exposure_time_us)
         if variant_writers is not None:
             def ts_on_frame(bundle: FrameBundle, index: int) -> None:
                 self._on_frame(bundle, index)
@@ -1024,8 +1027,10 @@ class MainWindow:
                      and self._calibration is not None)
         corrected_luma = transform.apply(bundle.luminance16)
         if flux_mode:
-            # Particle flux: afmhot-style colormap, normalized to the peak.
-            scalar = self._calibration.apply(corrected_luma)
+            # Particle flux, normalized to the calibration's reference
+            # exposure: flux = f(luminance) * t_norm / t_current.
+            scalar = self._calibration.apply(corrected_luma,
+                                             self._camera.exposure_time_us)
             peak = float(scalar.max())
             norm = scalar / (peak if peak > 0 else 1.0)
             shown = display.apply_afmhot(norm)
@@ -1184,7 +1189,13 @@ class MainWindow:
         if values.size < 2:
             return
         vmin, vmax = float(values.min()), float(values.max())
-        span = (vmax - vmin) or 1.0
+        # Y scale: [min(0, data min), 1.1 x data max] so the beam peak
+        # sits at ~91% of the plot height (negative dips still visible).
+        y_bottom = min(0.0, vmin)
+        y_top = 1.1 * max(vmax, 0.0)
+        if y_top <= y_bottom:
+            y_top = y_bottom + 1.0
+        span = (y_top - y_bottom) or 1.0
         c0, c1 = float(coords[0]), float(coords[-1])
         cspan = (c1 - c0) or 1.0
         # The vertical profile's coordinate axis is descending (top ->
@@ -1203,8 +1214,8 @@ class MainWindow:
             px, _ = xy(tick, vmin)
             canvas.create_line(px, 4, px, height - 16,
                                fill="#404040", dash=(2, 4))
-        if vmax > vmin:
-            for tick in nice_ticks(vmin, vmax, target=3):
+        if y_top > y_bottom:
+            for tick in nice_ticks(y_bottom, y_top, target=3):
                 _, py = xy(c0, tick)
                 canvas.create_line(4, py, width - 4, py,
                                    fill="#404040", dash=(2, 4))
@@ -1224,9 +1235,9 @@ class MainWindow:
             px, _ = xy(tick, vmin)
             canvas.create_text(px, height - 2, text=f"{tick:g}", anchor="s",
                                fill="#aaaaaa", font=small)
-        canvas.create_text(width - 4, 14, text=f"{vmax:.3g}", anchor="ne",
+        canvas.create_text(width - 4, 14, text=f"{y_top:.3g}", anchor="ne",
                            fill="#aaaaaa", font=small)
-        canvas.create_text(width - 4, height - 16, text=f"{vmin:.3g}",
+        canvas.create_text(width - 4, height - 16, text=f"{y_bottom:.3g}",
                            anchor="se", fill="#aaaaaa", font=small)
 
     def _reset_view(self) -> None:
