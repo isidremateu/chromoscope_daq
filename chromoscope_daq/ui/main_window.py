@@ -61,8 +61,9 @@ MODE_STREAMING = "Streaming"
 MODE_TIME_SERIES = "Time Series"
 MODES = (MODE_SNAPSHOT, MODE_STREAMING, MODE_TIME_SERIES)
 
-#: Flux units (README: intensity calibration output).
-FLUX_UNITS = "p/cm²/s"
+#: Flux units (README: intensity calibration output). ASCII on purpose:
+#: the superscript-2 glyph rendered unreliably in some fonts.
+FLUX_UNITS = "p/cm^2/s"
 
 
 class MainWindow:
@@ -127,8 +128,10 @@ class MainWindow:
         self._build_mode_frame(left)
         self._build_settings_frame(left)
         self._build_acquisition_frame(left)
+        self._build_corrections_frame(left)
+        self._build_profile_controls(left)
         self._build_display(center)
-        self._build_profile_column(right)
+        self._build_profile_canvases(right)
 
     def _build_menu(self) -> None:
         menu = tk.Menu(self._root)
@@ -366,9 +369,9 @@ class MainWindow:
         self._canvas.bind("<B1-Motion>", self._on_drag)
         self._canvas.bind("<ButtonRelease-1>", self._on_release)
 
-    # -- right column: corrections + profiles ----------------------------
+    # -- corrections indicators + profile controls (left column) ---------
 
-    def _build_profile_column(self, parent) -> None:
+    def _build_corrections_frame(self, parent) -> None:
         indicators = ttk.LabelFrame(parent, text="Corrections", padding=4)
         indicators.pack(fill="x", pady=(0, 6))
         self._perspective_status_var = tk.StringVar()
@@ -383,7 +386,9 @@ class MainWindow:
         ttk.Label(indicators, textvariable=self._calibration_status_var,
                   wraplength=180, justify="left").grid(
             row=1, column=1, sticky="w")
+        self._update_indicators()
 
+    def _build_profile_controls(self, parent) -> None:
         box = ttk.LabelFrame(parent, text="Profiles", padding=4)
         box.pack(fill="x", pady=(0, 6))
         self._profile_info_var = tk.StringVar(value="none")
@@ -406,7 +411,12 @@ class MainWindow:
         self._cut_y_var = tk.StringVar(value="0.0")
         ttk.Entry(cuts, textvariable=self._cut_y_var, width=7).grid(
             row=1, column=1, sticky="w", padx=4)
+        ttk.Label(box, text="Click on the corrected view to move the cuts.",
+                  foreground="#888888").pack(anchor="w", pady=(4, 0))
 
+    # -- right column: profile canvases only ------------------------------
+
+    def _build_profile_canvases(self, parent) -> None:
         self._h_label_var = tk.StringVar()
         ttk.Label(parent, textvariable=self._h_label_var).pack(
             anchor="w", pady=(4, 0))
@@ -1023,6 +1033,7 @@ class MainWindow:
         geom = display.compute_view((shown.shape[1], shown.shape[0]),
                                     canvas_size)
         self._geom = geom
+        self._corrected_size = (shown.shape[1], shown.shape[0])
         self._show_image(shown, geom)
         # Axis grid + corner range labels.
         if self._grid_var.get():
@@ -1040,8 +1051,31 @@ class MainWindow:
             self._canvas.create_text(
                 canvas_size[0] - 6, 6, text="particle flux",
                 anchor="ne", fill="#ffff00")
+        # Red markers at the profile cut positions (click on the view to
+        # move them).
+        self._draw_cut_markers(geom, transform, shown.shape[1],
+                               shown.shape[0])
         self._draw_profiles(corrected_luma if not flux_mode else scalar,
-                            "flux" if flux_mode else "luminance")
+                            FLUX_UNITS if flux_mode else "luminance")
+
+    def _draw_cut_markers(self, geom, transform, width: int,
+                          height: int) -> None:
+        cut_x = self._to_float(self._cut_x_var.get(), 0.0)
+        cut_y = self._to_float(self._cut_y_var.get(), 0.0)
+        px, _ = transform.mm_to_output((cut_x, 0.0), transform.x_range,
+                                       transform.y_range, (width, height))
+        px = max(0.0, min(float(width), px))
+        cx1, cy1 = geom.image_to_canvas(px, 0)
+        cx2, cy2 = geom.image_to_canvas(px, height)
+        self._canvas.create_line(cx1, cy1, cx2, cy2,
+                                 fill="#ff4040", dash=(6, 3))
+        _, py = transform.mm_to_output((0.0, cut_y), transform.x_range,
+                                       transform.y_range, (width, height))
+        py = max(0.0, min(float(height), py))
+        cx1, cy1 = geom.image_to_canvas(0, py)
+        cx2, cy2 = geom.image_to_canvas(width, py)
+        self._canvas.create_line(cx1, cy1, cx2, cy2,
+                                 fill="#ff4040", dash=(6, 3))
 
     def _draw_grid(self, width: int, height: int, geom, transform) -> None:
         """Dashed mm grid over the corrected view, with tick labels."""
@@ -1153,6 +1187,18 @@ class MainWindow:
             py = height - 16 - (value - vmin) / span * (height - 26)
             return px, py
 
+        # Dashed grid lines behind the curve (x ticks and, when the
+        # values span a range, y ticks).
+        for tick in nice_ticks(c0, c1, target=4):
+            px, _ = xy(tick, vmin)
+            canvas.create_line(px, 4, px, height - 16,
+                               fill="#404040", dash=(2, 4))
+        if vmax > vmin:
+            for tick in nice_ticks(vmin, vmax, target=3):
+                _, py = xy(c0, tick)
+                canvas.create_line(4, py, width - 4, py,
+                                   fill="#404040", dash=(2, 4))
+
         points = []
         for coord, value in zip(coords, values):
             points.extend(xy(float(coord), float(value)))
@@ -1197,6 +1243,11 @@ class MainWindow:
         self._canvas.coords(self._draw_rect, *self._live_rect)
 
     def _on_release(self, event) -> None:
+        if (self._display_mode_var.get() == "corrected"
+                and self._perspective is not None):
+            # Corrected mode: a click (or drag) moves the profile cuts.
+            self._set_cuts_from_click(event.x, event.y)
+            return
         if not self._drawing:
             return
         self._drawing = False
@@ -1213,6 +1264,26 @@ class MainWindow:
         if self._roi is not None and \
                 getattr(self, "_last_bundle", None) is not None:
             self._render(self._last_bundle)  # zoom the on-screen frame now
+
+    def _set_cuts_from_click(self, canvas_x: float, canvas_y: float) -> None:
+        """Set the profile cuts from a click on the corrected view."""
+        geom = self._geom
+        transform = self._perspective
+        size = getattr(self, "_corrected_size", None)
+        if geom is None or transform is None or size is None:
+            return
+        width, height = size
+        px, py = geom.canvas_to_image(canvas_x, canvas_y)
+        px = max(0.0, min(float(width), px))
+        py = max(0.0, min(float(height), py))
+        x_min, x_max = transform.x_range
+        y_min, y_max = transform.y_range
+        cut_x = x_min + px / width * (x_max - x_min)
+        cut_y = y_max - py / height * (y_max - y_min)
+        self._cut_x_var.set(f"{cut_x:.2f}")
+        self._cut_y_var.set(f"{cut_y:.2f}")
+        if getattr(self, "_last_bundle", None) is not None:
+            self._render(self._last_bundle)
 
     # ------------------------------------------------------------------
     # Shutdown
