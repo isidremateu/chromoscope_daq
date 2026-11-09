@@ -15,3 +15,6 @@ __pycache__/
 
 # Smoke test output data
 smoke_out_*/
+
+# Default acquisition data folder
+data/
