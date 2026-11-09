@@ -1,5 +1,38 @@
 # Introduction:
 
+## Installation (new computer)
+
+1. Install Python 3.10 or newer (tested with 3.14) and Git.
+2. Clone the repository and create a virtual environment:
+   ```
+   git clone https://github.com/isidremateu/chromoscope_daq.git
+   cd chromoscope_daq
+   python -m venv .venv
+   .venv\Scripts\python -m pip install --upgrade pip
+   .venv\Scripts\python -m pip install -r chromoscope_daq\requirements.txt
+   ```
+3. Install the Thorlabs TSI SDK from the bundled zip (see next section —
+   the `Scientific Camera Interfaces` folder is NOT part of the git
+   repository and must be copied from an existing installation):
+   ```
+   .venv\Scripts\python -m pip install "Scientific Camera Interfaces/SDK/Python Toolkit/thorlabs_tsi_camera_python_sdk_package.zip"
+   ```
+4. Run the application with the camera attached:
+   ```
+   .venv\Scripts\python -m chromoscope_daq
+   ```
+   (add `--cli` for the console fallback).
+
+Notes:
+- The vendored SDK (native DLLs) lives under `Scientific Camera
+  Interfaces/` and is deliberately not in git: copy that folder from
+  cernbox (or another installation) before step 3.
+- Application settings (including perspective correction and intensity
+  calibration) are restored automatically from
+  `%USERPROFILE%\.chromoscope_daq\settings.json`; copy that file to
+  migrate a setup between computers. Saved correction/calibration json
+  files are wherever they were exported.
+
 The chromoscope is like an endoscope, but for particle beam observation. On the beamline, a scintillating screen (Chromox) is placed at 45 degrees angle with respect to the beam direction. From above the scintillating screen, through an optical window, a lens focuses the image on a multi-core fibre optic image guide. The image guide transports the image outside the bunker, where it is acquired by means of a zoom lens coupled to a Thorlabs CS165CU1/M camera. 
 
 Chromoscope Data Acquisition (DAQ) communicates with the camera and retrieves beam images. Its main features are:
