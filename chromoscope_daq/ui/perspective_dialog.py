@@ -38,6 +38,7 @@ class PerspectiveDialog(tk.Toplevel):
         self.grab_set()
         self._on_apply_cb = on_apply
         self._get_last_frame = get_last_frame
+        self._json_path: Optional[str] = None
         self._image_rgb8: Optional[np.ndarray] = None
         self._image_path: Optional[str] = None
         self._geom: Optional[display.ViewGeometry] = None
@@ -239,7 +240,9 @@ class PerspectiveDialog(tk.Toplevel):
             messagebox.showerror("Perspective correction", str(error),
                                  parent=self)
             return
-        self._on_apply_cb(transform)
+        # The source path is reported so the main window can show where
+        # the correction came from (None when defined interactively).
+        self._on_apply_cb(transform, self._json_path)
         self.destroy()
 
     def _save_json(self) -> None:
@@ -271,6 +274,7 @@ class PerspectiveDialog(tk.Toplevel):
             messagebox.showerror("Perspective correction", str(error),
                                  parent=self)
             return
+        self._json_path = path
         self._fill_from_transform(transform)
 
     def _fill_from_transform(self, transform: PerspectiveTransform) -> None:

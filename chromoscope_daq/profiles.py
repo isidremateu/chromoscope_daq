@@ -16,11 +16,38 @@ from typing import Dict
 import numpy as np
 
 __all__ = ["BeamProfiles", "extract_profiles", "profile_stats",
-           "gaussian_overlay", "gaussian_fit"]
+           "gaussian_overlay", "gaussian_fit", "nice_ticks"]
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
+
+
+def nice_ticks(lo: float, hi: float, target: int = 6) -> list:
+    """Rounded tick values covering [lo, hi] with about ``target`` steps.
+
+    Steps are 1/2/2.5/5 x 10^n; used for the axis grid and profile tick
+    labels.
+    """
+    import math
+
+    span = hi - lo
+    if span <= 0:
+        return [lo]
+    rough = span / max(target, 1)
+    exponent = math.floor(math.log10(rough)) if rough > 0 else 0
+    step = 10.0 ** exponent
+    for factor in (1.0, 2.0, 2.5, 5.0, 10.0):
+        step = factor * 10.0 ** exponent
+        if span / step <= target:
+            break
+    first = math.ceil(lo / step - 1e-9)
+    ticks = []
+    index = first
+    while index * step <= hi + 1e-9:
+        ticks.append(round(index * step, 12))
+        index += 1
+    return ticks
 
 
 @dataclass

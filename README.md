@@ -72,8 +72,8 @@ The calibration functions can be saved and loaded from disk using json files.
 The captured image can be displayed in 2 modes:
 
 - In raw mode, the acquired image is simply displayed without further processing. The user can select an area or region of interest (ROI) to zoom in by drawing a square on the display canvas. The ROI persists for subsequent acquisitions, unless the user restores the full-frame view using a dedicated button. ROI affects only the display, not the way files are saved on disk.
-- If a perspective correction matrix has been defined, the calibrated mode becomes available. This mode shows the perspective corrected image with calibrated X and Y axis (in mm). The user defines the range of the X and Y axis for display. Any missing values are filled with black color.
- If an intensity calibration has been defined, the user can switch it on and off to visualise either Pixel Value or particle flux units. In addition, in a separate canvas the vertical (X = 0 mm on the corrected scale) and horizontal (Y = 0 mm) profiles are shown, to ease beam centering by the operator. The profiles are plotted in units of luminance or particle flux (if intensity calibration is switched on). A radio button selector allows to select what information is extracted from the profiles:
+- If a perspective correction matrix has been defined, the calibrated mode becomes available. This mode shows the perspective corrected image with calibrated X and Y axis (in mm), with an axis grid overlaying the image. The user defines the range of the X and Y axis for display. Any missing values are filled with black color.
+ If an intensity calibration has been defined, the user can switch it on and off to visualise either Pixel Value or particle flux units (p/cm2/s); a colorbar visualises the flux scale. In addition, in separate canvases in a side panel, the vertical (X = cut position on the corrected scale) and horizontal (Y = cut position) profiles are shown, to ease beam centering by the operator. The cut positions are user-selectable, defaulting to X = 0 mm and Y = 0 mm. The profiles are plotted in units of luminance or particle flux (if intensity calibration is switched on). A radio button selector allows to select what information is extracted from the profiles:
 
     - No information.
     - mean/σ statistics: the mean and standard deviation are calculated and displayed, and used to overlay gaussian horizontal and vertical profiles.
@@ -92,5 +92,9 @@ In all color spaces, the scalar used for beam profiles and intensity calibration
 
 mp4 files are written at the frame rate configured in the camera, or the fastest allowed by I/O speed. 
 
-Corrected images without intensity calibration follow the same 10-bit-in-16-bit rule as raw TIFFs. Images with intensity calibration applied contain flux values and are stored as 32-bit float TIFF (units defined by the calibration function).
+Corrected images without intensity calibration follow the same 10-bit-in-16-bit rule as raw TIFFs. Images with intensity calibration applied contain flux values (units: p/cm2/s) and are stored as 32-bit float TIFF.
+
+## Settings persistence
+
+All configuration settings — including the perspective correction and the intensity calibration — are restored automatically between sessions, and saved again whenever they are applied and on exit. The user can additionally save and load configuration files and store the current settings as the default (File menu). Indicators show whether the perspective correction and the intensity calibration are defined and, when they were loaded from file, from which file.
 

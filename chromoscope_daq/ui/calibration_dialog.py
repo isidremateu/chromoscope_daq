@@ -26,6 +26,7 @@ class CalibrationDialog(tk.Toplevel):
         self.transient(master)
         self.grab_set()
         self._on_apply_cb = on_apply
+        self._json_path: Optional[str] = None
         self._build_ui()
         if calibration is not None:
             self._kind_var.set(calibration.kind)
@@ -108,7 +109,8 @@ class CalibrationDialog(tk.Toplevel):
             messagebox.showerror("Intensity calibration", str(error),
                                  parent=self)
             return
-        self._on_apply_cb(calibration)
+        # Source path so the main window can show where it came from.
+        self._on_apply_cb(calibration, self._json_path)
         self.destroy()
 
     def _save_json(self) -> None:
@@ -140,6 +142,7 @@ class CalibrationDialog(tk.Toplevel):
             messagebox.showerror("Intensity calibration", str(error),
                                  parent=self)
             return
+        self._json_path = path
         self._kind_var.set(calibration.kind)
         self._on_kind_change()
         for var, value in zip(self._coeff_vars, calibration.coefficients):
