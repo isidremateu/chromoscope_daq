@@ -16,8 +16,44 @@ from __future__ import annotations
 
 import os
 import platform
+import sys
 import threading
 import typing
+import zipfile
+from typing import Optional
+
+
+def _register_dll_dir(lib_dir: str) -> None:
+    """Make ``lib_dir`` discoverable for the SDK's bare-name DLL loads."""
+    os.environ["PATH"] = lib_dir + os.pathsep + os.environ.get("PATH", "")
+    try:
+        # Windows-only API; guarded for portability.
+        os.add_dll_directory(lib_dir)
+    except (OSError, AttributeError):
+        pass
+
+
+def _extract_dlls_from_zip(zip_path: str, package_dir: str) -> Optional[str]:
+    """Extract the native SDK DLLs from the vendored zip into the
+    installed package's ``lib`` folder.
+
+    Newer setuptools versions used by pip's build isolation sometimes
+    omit the DLLs when building the SDK wheel. Returns the DLL directory
+    (or None when the zip does not contain them).
+    """
+    arch = "windows-x86_64" if sys.maxsize > 2 ** 32 else "windows-x86"
+    marker = f"/lib/{arch}/"
+    target = os.path.join(package_dir, "lib")
+    extracted = 0
+    with zipfile.ZipFile(zip_path) as archive:
+        for name in archive.namelist():
+            if marker in name and name.endswith(".dll"):
+                os.makedirs(target, exist_ok=True)
+                out_path = os.path.join(target, os.path.basename(name))
+                with archive.open(name) as source, open(out_path, "wb") as dst:
+                    dst.write(source.read())
+                extracted += 1
+    return target if extracted else None
 
 
 def _add_sdk_dll_directory() -> None:
@@ -25,11 +61,10 @@ def _add_sdk_dll_directory() -> None:
 
     The SDK loads ``thorlabs_tsi_camera_sdk.dll`` by bare name, which
     searches the executable directory, the system directories and PATH —
-    but not the package's own ``lib`` folder where pip puts the DLLs. On
-    a fresh machine that fails with 'Unable to load library'. Register
-    the package lib folder on PATH (and via os.add_dll_directory) before
-    the SDK initializes. Dependent DLLs (logger, demosaic, ...) resolve
-    from the same folder.
+    but not the package's own ``lib`` folder. Additionally, pip builds
+    with newer setuptools sometimes omit the DLLs entirely. This helper
+    registers the DLL folder (extracting it from the vendored SDK zip
+    when missing) before the SDK initializes.
     """
     if platform.system() != "Windows":
         return
@@ -39,24 +74,23 @@ def _add_sdk_dll_directory() -> None:
         package_dir = os.path.dirname(os.path.abspath(thorlabs_tsi_sdk.__file__))
     except ImportError:
         return
-    # pip-installed package: DLLs sit flat in thorlabs_tsi_sdk/lib
-    # (setup.py maps the 'thorlabs_tsi_sdk.lib' subpackage there). The
-    # arch subfolders exist in the source tree / native toolkit layouts.
-    candidates = [
-        os.path.join(package_dir, "lib"),
-        os.path.join(package_dir, "lib", "windows-x86_64"),
-        os.path.join(package_dir, "lib", "windows-x86"),
-    ]
-    for lib_dir in candidates:
-        if not os.path.isfile(os.path.join(lib_dir,
-                                           "thorlabs_tsi_camera_sdk.dll")):
-            continue
-        os.environ["PATH"] = lib_dir + os.pathsep + os.environ.get("PATH", "")
-        try:
-            os.add_dll_directory(lib_dir)
-        except OSError:
-            pass
-        break
+    lib_dir = os.path.join(package_dir, "lib")
+    if not os.path.isfile(os.path.join(lib_dir,
+                                       "thorlabs_tsi_camera_sdk.dll")):
+        repo_root = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", ".."))
+        zip_path = os.path.join(
+            repo_root, "Scientific Camera Interfaces", "SDK",
+            "Python Toolkit", "thorlabs_tsi_camera_python_sdk_package.zip")
+        if os.path.isfile(zip_path):
+            try:
+                lib_dir = (_extract_dlls_from_zip(zip_path, package_dir)
+                           or lib_dir)
+            except (OSError, zipfile.BadZipFile):
+                pass
+    if os.path.isfile(os.path.join(lib_dir,
+                                   "thorlabs_tsi_camera_sdk.dll")):
+        _register_dll_dir(lib_dir)
 
 
 _add_sdk_dll_directory()
