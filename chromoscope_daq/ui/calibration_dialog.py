@@ -1,0 +1,146 @@
+"""Intensity calibration dialog (README 'Intensity calibration').
+
+Pick one of the four function types, enter the coefficients, and
+save/load the definition as json. On Apply the calibration is handed to
+the main window, enabling the particle-flux display toggle and the
+calibrated variant saving.
+"""
+
+from __future__ import annotations
+
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+from typing import Callable, Optional
+
+from ..calibration import (CALIBRATION_TYPES, COEFF_COUNTS,
+                           CalibrationError, IntensityCalibration)
+
+
+class CalibrationDialog(tk.Toplevel):
+    """Editor for one intensity calibration definition."""
+
+    def __init__(self, master, calibration: Optional[IntensityCalibration],
+                 on_apply: Callable[[IntensityCalibration], None]) -> None:
+        super().__init__(master)
+        self.title("Intensity calibration")
+        self.transient(master)
+        self.grab_set()
+        self._on_apply_cb = on_apply
+        self._build_ui()
+        if calibration is not None:
+            self._kind_var.set(calibration.kind)
+            self._on_kind_change()
+            for var, value in zip(self._coeff_vars, calibration.coefficients):
+                var.set(f"{value:g}")
+
+    def _build_ui(self) -> None:
+        body = ttk.Frame(self, padding=10)
+        body.pack(fill="both", expand=True)
+
+        ttk.Label(body, text="Function type:").grid(row=0, column=0,
+                                                    sticky="w")
+        self._kind_var = tk.StringVar(value=CALIBRATION_TYPES[0])
+        kind_box = ttk.Combobox(body, textvariable=self._kind_var, width=12,
+                                values=list(CALIBRATION_TYPES),
+                                state="readonly")
+        kind_box.grid(row=0, column=1, sticky="w", padx=4)
+        kind_box.bind("<<ComboboxSelected>>", lambda _e: self._on_kind_change())
+
+        self._formula_var = tk.StringVar()
+        ttk.Label(body, textvariable=self._formula_var).grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(4, 8))
+
+        self._coeff_vars = [tk.StringVar() for _ in range(3)]
+        self._coeff_labels: list[ttk.Label] = []
+        self._coeff_entries: list[ttk.Entry] = []
+        for index, label in enumerate(("a", "b", "c")):
+            coeff_label = ttk.Label(body, text=f"{label} =")
+            coeff_label.grid(row=2 + index, column=0, sticky="w", pady=2)
+            entry = ttk.Entry(body, textvariable=self._coeff_vars[index],
+                              width=12)
+            entry.grid(row=2 + index, column=1, sticky="w", padx=4, pady=2)
+            self._coeff_labels.append(coeff_label)
+            self._coeff_entries.append(entry)
+
+        buttons = ttk.Frame(body)
+        buttons.grid(row=5, column=0, columnspan=2, sticky="we",
+                     pady=(10, 0))
+        ttk.Button(buttons, text="Save json...",
+                   command=self._save_json).pack(side="left")
+        ttk.Button(buttons, text="Load json...",
+                   command=self._load_json).pack(side="left", padx=4)
+        ttk.Button(buttons, text="Apply",
+                   command=self._apply).pack(side="right")
+        ttk.Button(buttons, text="Cancel",
+                   command=self.destroy).pack(side="right", padx=4)
+        self._on_kind_change()
+
+    def _on_kind_change(self) -> None:
+        kind = self._kind_var.get()
+        count = COEFF_COUNTS[kind]
+        formulas = {
+            "linear": "flux = a * luminance + b",
+            "quadratic": "flux = a * luminance^2 + b * luminance + c",
+            "power law": "flux = a * luminance^b + c",
+            "logarithmic": "flux = a * ln(luminance + b) + c",
+        }
+        self._formula_var.set(formulas[kind])
+        for index in range(3):
+            state = "normal" if index < count else "disabled"
+            self._coeff_entries[index].config(state=state)
+            self._coeff_labels[index].config(
+                state="normal" if index < count else "disabled")
+
+    def _build_calibration(self) -> IntensityCalibration:
+        kind = self._kind_var.get()
+        count = COEFF_COUNTS[kind]
+        coefficients = tuple(float(var.get()) for var in self._coeff_vars
+                             [:count])
+        calibration = IntensityCalibration(kind=kind,
+                                           coefficients=coefficients)
+        calibration.validate()
+        return calibration
+
+    def _apply(self) -> None:
+        try:
+            calibration = self._build_calibration()
+        except (CalibrationError, ValueError) as error:
+            messagebox.showerror("Intensity calibration", str(error),
+                                 parent=self)
+            return
+        self._on_apply_cb(calibration)
+        self.destroy()
+
+    def _save_json(self) -> None:
+        try:
+            calibration = self._build_calibration()
+        except (CalibrationError, ValueError) as error:
+            messagebox.showerror("Intensity calibration", str(error),
+                                 parent=self)
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=(("Intensity calibration", "*.json"),))
+        if not path:
+            return
+        try:
+            calibration.save_json(path)
+        except OSError as error:
+            messagebox.showerror("Intensity calibration", str(error),
+                                 parent=self)
+
+    def _load_json(self) -> None:
+        path = filedialog.askopenfilename(
+            filetypes=(("Intensity calibration", "*.json"),))
+        if not path:
+            return
+        try:
+            calibration = IntensityCalibration.load_json(path)
+        except CalibrationError as error:
+            messagebox.showerror("Intensity calibration", str(error),
+                                 parent=self)
+            return
+        self._kind_var.set(calibration.kind)
+        self._on_kind_change()
+        for var, value in zip(self._coeff_vars, calibration.coefficients):
+            var.set(f"{value:g}")

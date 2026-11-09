@@ -27,14 +27,16 @@ from PIL import Image, ImageTk
 from ..acquisition import (AcquisitionError, AutoExposureController,
                            FrameBundle, SnapshotSession, StreamingSession,
                            StreamingStats, TimeSeriesSession, TimeSeriesStats,
-                           acquisition_timestamp, camera_fps_max,
-                           make_processor, minimum_interval_s)
+                           acquisition_timestamp, build_basename,
+                           camera_fps_max, make_processor, minimum_interval_s)
 from ..acquisition.processing import COLOR_SPACES
+from ..calibration import IntensityCalibration
 from ..camera import CameraService
 from ..config import Configuration, ConfigurationError, max_fps
 from ..perspective import PerspectiveTransform
 from ..profiles import (extract_profiles, gaussian_fit, gaussian_overlay,
                         profile_stats)
+from ..variants import TimeSeriesVariantWriters, save_snapshot_variants
 from . import display
 
 #: Fixed display canvas size, in pixels.
@@ -76,6 +78,7 @@ class MainWindow:
         self._last_auto: Optional[tuple] = None
         self._live_ae: Optional[tuple] = None
         self._perspective: Optional[PerspectiveTransform] = None
+        self._calibration: Optional[IntensityCalibration] = None
         self._build_ui()
         self._poll_events()
 
@@ -109,6 +112,8 @@ class MainWindow:
         correction = tk.Menu(menu, tearoff=False)
         correction.add_command(label="Perspective correction...",
                                command=self._open_perspective)
+        correction.add_command(label="Intensity calibration...",
+                               command=self._open_calibration)
         menu.add_cascade(label="Correction", menu=correction)
         self._root.config(menu=menu)
 
@@ -119,12 +124,28 @@ class MainWindow:
             on_apply=self._set_perspective,
             get_last_frame=lambda: getattr(self, "_last_bundle", None))
 
+    def _open_calibration(self) -> None:
+        from .calibration_dialog import CalibrationDialog
+        CalibrationDialog(self._root, self._calibration,
+                          on_apply=self._set_calibration)
+
+    def _set_calibration(self, calibration: IntensityCalibration) -> None:
+        self._calibration = calibration
+        # The flux unit toggle becomes available (README: switch on/off).
+        self._flux_radio.config(state="normal")
+        self._update_variant_states()
+        self._status_var.set(
+            f"Intensity calibration defined: {calibration.kind} "
+            f"{calibration.coefficients}. "
+            "Particle flux display and calibrated variant saving enabled.")
+
     def _set_perspective(self, transform: PerspectiveTransform) -> None:
         self._perspective = transform
         # The corrected display mode is now available (README) — switch
         # to it so the user immediately sees the result.
         self._corrected_radio.config(state="normal")
         self._display_mode_var.set("corrected")
+        self._update_variant_states()
         if getattr(self, "_last_bundle", None) is not None:
             self._render(self._last_bundle)
         self._status_var.set(
@@ -207,6 +228,18 @@ class MainWindow:
         self._save_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(box, text="Save data", variable=self._save_var
                         ).pack(anchor="w")
+        # Variant saving (README): corrected/calibrated copies, not
+        # available in Streaming.
+        self._save_corrected_var = tk.BooleanVar(value=False)
+        self._save_corrected_check = ttk.Checkbutton(
+            box, text="Also save corrected variant",
+            variable=self._save_corrected_var, state="disabled")
+        self._save_corrected_check.pack(anchor="w")
+        self._save_calibrated_var = tk.BooleanVar(value=False)
+        self._save_calibrated_check = ttk.Checkbutton(
+            box, text="Also save calibrated variant (float tif)",
+            variable=self._save_calibrated_var, state="disabled")
+        self._save_calibrated_check.pack(anchor="w")
 
         path_frame = ttk.Frame(box)
         path_frame.pack(fill="x")
@@ -252,6 +285,22 @@ class MainWindow:
         ttk.Label(box, textvariable=self._status_var).pack(
             anchor="w", pady=(6, 0))
 
+    def _update_variant_states(self) -> None:
+        """Variant saving: Snapshot/Time Series only, needs a correction;
+        the calibrated variant additionally needs a calibration."""
+        mode = self._mode_var.get()
+        can_correct = (mode != MODE_STREAMING
+                       and self._perspective is not None)
+        self._save_corrected_check.config(
+            state="normal" if can_correct else "disabled")
+        if not can_correct:
+            self._save_corrected_var.set(False)
+        can_calibrate = can_correct and self._calibration is not None
+        self._save_calibrated_check.config(
+            state="normal" if can_calibrate else "disabled")
+        if not can_calibrate:
+            self._save_calibrated_var.set(False)
+
     def _on_mode_change(self) -> None:
         """Make the format selector reflect what the mode actually saves."""
         mode = self._mode_var.get()
@@ -264,6 +313,7 @@ class MainWindow:
             self._format_combo.config(state="disabled")
             self._format_var.set("mp4" if mode == MODE_STREAMING
                                  else "tif + OME")
+        self._update_variant_states()
 
     def _build_canvas(self, parent) -> None:
         self._canvas = tk.Canvas(parent, width=CANVAS_SIZE[0],
@@ -285,6 +335,16 @@ class MainWindow:
             controls, text="Corrected (mm)", value="corrected",
             variable=self._display_mode_var, state="disabled")
         self._corrected_radio.pack(side="left", padx=4)
+        ttk.Label(controls, text="Units:").pack(side="left", padx=(12, 2))
+        self._units_var = tk.StringVar(value="pixel")
+        ttk.Radiobutton(controls, text="Pixel value", value="pixel",
+                        variable=self._units_var).pack(side="left")
+        # Enabled once an intensity calibration is defined (README: the
+        # user switches between pixel value and particle flux).
+        self._flux_radio = ttk.Radiobutton(
+            controls, text="Particle flux", value="flux",
+            variable=self._units_var, state="disabled")
+        self._flux_radio.pack(side="left", padx=4)
 
         info = ttk.Frame(parent)
         info.grid(row=2, column=0, sticky="we")
@@ -409,12 +469,26 @@ class MainWindow:
         camera = self._camera
         on_frame = self._on_frame
         if mode == MODE_SNAPSHOT:
+            save_corrected = self._save_corrected_var.get()
+            save_calibrated = self._save_calibrated_var.get()
+            fmt = self._format_var.get()
             session = SnapshotSession(
                 camera, ts, identifier, save_dir=save_dir,
                 save_enabled=save_enabled,
-                fmt=self._format_var.get(), processor=self._processor,
+                fmt=fmt, processor=self._processor,
                 on_frame=on_frame)
-            return session.run
+
+            def run_snapshot():
+                bundle = session.run()
+                if save_enabled and (save_corrected or save_calibrated):
+                    path_no_ext = os.path.join(
+                        save_dir, build_basename(ts, identifier))
+                    save_snapshot_variants(
+                        bundle, self._perspective, self._calibration,
+                        path_no_ext, fmt, save_corrected, save_calibrated)
+                return bundle
+
+            return run_snapshot
         if mode == MODE_STREAMING:
             fps = config.fps
             fps_cap = max_fps(camera.exposure_time_us, camera)
@@ -442,13 +516,39 @@ class MainWindow:
         dt_min = minimum_interval_s(exposure_us, camera_fps_max(camera))
         interval = max(float(self._dt_var.get() or 1.0), dt_min)
         max_frames = int(float(self._max_frames_var.get() or 0))
+        # Variant writers (corrected/calibrated multi-frame tifs) are
+        # created up front and fed from the frame callback.
+        variant_writers = None
+        if save_enabled:
+            save_corrected = self._save_corrected_var.get()
+            save_calibrated = self._save_calibrated_var.get()
+            if (self._perspective is not None
+                    and (save_corrected or save_calibrated)):
+                variant_writers = TimeSeriesVariantWriters(
+                    ts, identifier, save_dir, self._perspective,
+                    self._calibration, save_corrected, save_calibrated)
+        if variant_writers is not None:
+            def ts_on_frame(bundle: FrameBundle, index: int) -> None:
+                self._on_frame(bundle, index)
+                variant_writers.write(bundle)
+            frame_callback: Callable = ts_on_frame
+        else:
+            frame_callback = self._on_frame
         session = TimeSeriesSession(
             camera, interval_s=interval, timestamp=ts,
             identifier=identifier, save_dir=save_dir,
             save_enabled=save_enabled,
             max_frames=max_frames or None,
-            processor=self._processor, on_frame=on_frame)
-        return lambda: session.run(self._stop_event)
+            processor=self._processor, on_frame=frame_callback)
+
+        def run_ts():
+            try:
+                return session.run(self._stop_event)
+            finally:
+                if variant_writers is not None:
+                    variant_writers.close()
+
+        return run_ts
 
     def _run_worker(self, target: Callable[[], object]) -> None:
         try:
@@ -589,14 +689,24 @@ class MainWindow:
     def _render_corrected(self, bundle: FrameBundle) -> None:
         transform = self._perspective
         assert transform is not None
-        rgb8 = display.bundle_to_rgb8(bundle)
-        corrected = transform.apply(rgb8)
+        flux_mode = (self._units_var.get() == "flux"
+                     and self._calibration is not None)
+        corrected_luma = transform.apply(bundle.luminance16)
+        if flux_mode:
+            # Particle flux: grayscale display, normalized to the peak.
+            scalar = self._calibration.apply(corrected_luma)
+            peak = float(scalar.max())
+            shown = (scalar / (peak if peak > 0 else 1.0) * 255.0
+                     ).clip(0, 255).astype(np.uint8)
+        else:
+            shown = display.bundle_to_rgb8(bundle)
+            shown = transform.apply(shown)
         canvas_size = (max(self._canvas.winfo_width(), 1),
                        max(self._canvas.winfo_height(), 1))
-        geom = display.compute_view((corrected.shape[1], corrected.shape[0]),
+        geom = display.compute_view((shown.shape[1], shown.shape[0]),
                                     canvas_size)
         self._geom = geom
-        crop = display.crop_for_view(corrected, geom)
+        crop = display.crop_for_view(shown, geom)
         target_size = (max(1, int(geom.crop_w * geom.scale)),
                        max(1, int(geom.crop_h * geom.scale)))
         self._photo = ImageTk.PhotoImage(
@@ -614,13 +724,17 @@ class MainWindow:
             canvas_size[0] - 6, canvas_size[1] - 6,
             text=f"X: {x_min:g} .. {x_max:g} mm",
             anchor="se", fill="white")
-        self._draw_profiles(bundle)
+        if flux_mode:
+            self._canvas.create_text(
+                canvas_size[0] - 6, 6, text="particle flux",
+                anchor="ne", fill="#ffff00")
+        self._draw_profiles(corrected_luma if not flux_mode else scalar,
+                            "flux" if flux_mode else "luminance")
 
-    def _draw_profiles(self, bundle: FrameBundle) -> None:
+    def _draw_profiles(self, corrected_scalar_arr, unit: str) -> None:
         transform = self._perspective
         assert transform is not None
-        corrected_luma = transform.apply(bundle.luminance16)
-        profiles = extract_profiles(corrected_luma, transform.x_range,
+        profiles = extract_profiles(corrected_scalar_arr, transform.x_range,
                                     transform.y_range)
         mode = self._profile_info_var.get()
         # README: the Gaussian fit is not available in Streaming (compute
@@ -641,16 +755,16 @@ class MainWindow:
                     amplitude=float(values.max() - values.min()),
                     center=stats["mean"], sigma=max(stats["sigma"], 1e-6))
                 text = (f"{label_text}: center {stats['mean']:.2f} mm, "
-                        f"width {stats['sigma']:.2f} mm")
+                        f"width {stats['sigma']:.2f} mm [{unit}]")
             elif effective == "fit":
                 fit = gaussian_fit(coords, values)
                 overlay = gaussian_overlay(coords, **fit)
                 text = (f"{label_text}: x0 {fit['center']:.2f} mm, "
                         f"FWHM {fit['sigma'] * 2.3548:.2f} mm, "
                         f"A {fit['amplitude']:.1f}, "
-                        f"base {fit['baseline']:.1f}")
+                        f"base {fit['baseline']:.1f} [{unit}]")
             else:
-                text = label_text
+                text = f"{label_text} [{unit}]"
             self._draw_profile_curve(canvas, coords, values, overlay, text)
 
     @staticmethod
