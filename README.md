@@ -33,6 +33,16 @@ Notes:
   migrate a setup between computers. Saved correction/calibration json
   files are wherever they were exported.
 
+Troubleshooting — "Could not initialize the Thorlabs TSI SDK": the
+console shows the underlying error.
+- `WinError 126` / `127`: install the Microsoft Visual C++ Redistributable
+  (x64) — the SDK's native DLLs depend on it.
+- `not found in the PATH`: the SDK pip package is not installed in this
+  virtual environment (step 3), or the `Scientific Camera Interfaces`
+  folder was not copied.
+- SDK initializes but no camera found: install the Thorlabs camera
+  drivers (ThorCam installer) and check the USB3 link.
+
 The chromoscope is like an endoscope, but for particle beam observation. On the beamline, a scintillating screen (Chromox) is placed at 45 degrees angle with respect to the beam direction. From above the scintillating screen, through an optical window, a lens focuses the image on a multi-core fibre optic image guide. The image guide transports the image outside the bunker, where it is acquired by means of a zoom lens coupled to a Thorlabs CS165CU1/M camera. 
 
 Chromoscope Data Acquisition (DAQ) communicates with the camera and retrieves beam images. Its main features are:

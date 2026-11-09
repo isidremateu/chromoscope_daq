@@ -14,8 +14,44 @@ reconnect or shutdown — is the caller's job, from the main thread.
 
 from __future__ import annotations
 
+import os
+import platform
 import threading
 import typing
+
+
+def _add_sdk_dll_directory() -> None:
+    """Make the Thorlabs SDK's native DLLs loadable on Windows.
+
+    The SDK loads ``thorlabs_tsi_camera_sdk.dll`` by bare name, which
+    searches the executable directory, the system directories and PATH —
+    but not the package's own ``lib`` folder where pip puts the DLLs. On
+    a fresh machine that fails with 'Unable to load library'. Register
+    the package lib folder on PATH (and via os.add_dll_directory) before
+    the SDK initializes. Dependent DLLs (logger, demosaic, ...) resolve
+    from the same folder.
+    """
+    if platform.system() != "Windows":
+        return
+    try:
+        import thorlabs_tsi_sdk
+
+        package_dir = os.path.dirname(os.path.abspath(thorlabs_tsi_sdk.__file__))
+    except ImportError:
+        return
+    for arch in ("windows-x86_64", "windows-x86"):
+        lib_dir = os.path.join(package_dir, "lib", arch)
+        if not os.path.isdir(lib_dir):
+            continue
+        os.environ["PATH"] = lib_dir + os.pathsep + os.environ.get("PATH", "")
+        try:
+            os.add_dll_directory(lib_dir)
+        except OSError:
+            pass
+        break
+
+
+_add_sdk_dll_directory()
 
 from thorlabs_tsi_sdk.tl_camera import TLCamera, TLCameraSDK
 
@@ -170,9 +206,11 @@ class CameraService:
             return TLCameraSDK()
         except Exception as error:  # noqa: BLE001
             raise CameraServiceError(
-                "Could not initialize the Thorlabs TSI SDK. Make sure the "
-                "Thorlabs drivers (ThorCam installer) are installed and no "
-                "other application is using the SDK."
+                f"Could not initialize the Thorlabs TSI SDK: {error!r}. "
+                "Make sure the Thorlabs camera drivers (ThorCam installer) "
+                "are installed, the Microsoft Visual C++ Redistributable "
+                "(x64) is present, and no other application is using the "
+                "SDK."
             ) from error
 
     def _discover_and_select(self) -> typing.Optional[str]:
