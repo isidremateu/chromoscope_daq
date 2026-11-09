@@ -1,5 +1,7 @@
 # OpenCode config
 opencode.json
+opencode_json_backup.txt
+session.json
 
 # Python virtual environment
 .venv/
